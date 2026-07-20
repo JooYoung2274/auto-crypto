@@ -61,6 +61,15 @@ export function PortfolioPanel({ version = 0 }: Props) {
           <span className="metric-label">미실현 손익</span>
           <span className={`metric-value ${pnlClass(pf.unrealized_pnl)}`}>{fmtSignedUsdt(pf.unrealized_pnl)}</span>
         </div>
+        <div className="metric-tile">
+          <span className="metric-label">누적 출금 수익</span>
+          <span
+            className={`metric-value ${typeof pf.withdrawn_cum === "number" && pf.withdrawn_cum > 0 ? "pos" : ""}`}
+            title="복리 금지 규칙 — 시드 초과 실현 수익은 자동으로 출금 원장에 격리됩니다"
+          >
+            {fmtUsdt(pf.withdrawn_cum ?? 0)}
+          </span>
+        </div>
       </div>
       {chartData.length > 0 && <EquityChart data={chartData} color="#52a9ff" />}
       <div className="table-scroll">

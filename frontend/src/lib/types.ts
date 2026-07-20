@@ -280,6 +280,8 @@ export interface PortfolioResponse {
   margin_used: number
   unrealized_pnl: number
   funding_cum?: number | null
+  /** 복리 금지 스윕 누적 출금 수익 (withdrawal_ledger 합, USDT). */
+  withdrawn_cum?: number | null
   positions: PositionInfo[]
   snapshots: PortfolioSnapshot[]
 }

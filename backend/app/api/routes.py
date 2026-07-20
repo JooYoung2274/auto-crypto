@@ -514,6 +514,12 @@ async def get_portfolio(request: Request) -> dict:
         "margin_used": balance.margin_used,
         "unrealized_pnl": balance.unrealized_pnl,
         "funding_cum": funding_cum,
+        # 복리 금지 스윕 누적액 — 시드 초과 실현 수익의 장부상 금고 (규칙 §1).
+        "withdrawn_cum": float(
+            db.execute(
+                "SELECT COALESCE(SUM(amount), 0.0) AS total FROM withdrawal_ledger"
+            )[0]["total"]
+        ),
         "positions": positions,
         "snapshots": snapshots,
     }

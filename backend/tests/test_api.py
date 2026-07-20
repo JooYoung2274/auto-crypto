@@ -235,9 +235,10 @@ def test_full_cycle_rest_contract(client, monkeypatch):
     pf = client.get("/api/portfolio").json()
     assert set(pf) == {
         "wallet_balance", "available", "margin_used", "unrealized_pnl",
-        "funding_cum", "positions", "snapshots",
+        "funding_cum", "withdrawn_cum", "positions", "snapshots",
     }
     assert pf["wallet_balance"] == pytest.approx(10_000.0)
+    assert pf["withdrawn_cum"] == 0.0  # 아직 스윕 전
     assert pf["snapshots"], "trade cycle must snapshot the portfolio"
     assert set(pf["snapshots"][0]) == {
         "ts", "wallet_balance", "available", "margin_used", "unrealized_pnl",
