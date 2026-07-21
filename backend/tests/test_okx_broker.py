@@ -105,6 +105,11 @@ class MockOKXApi:
         self.order_posts: list[dict] = []
         self.order_post_attempts = 0
         self.order_429_remaining = 0
+        self.order_5xx_remaining = 0  # POST /trade/order → HTTP 500 (모호한 실패)
+        self.order_query_5xx = False  # GET /trade/order → HTTP 500 (조회 실패)
+        self.order_query_absent = False  # GET /trade/order → 404 (미접수)
+        self.ioc_scode = "0"  # IOC(폴백) 주문 전용 sCode
+        self.query_acc_fill: str | None = None  # 조회 시 accFillSz 강제 (부분 체결)
         self.cancels: list[dict] = []
         self.leverage_calls: list[dict] = []
         # 계정 포지션 모드 — 'net_mode'(단방향, posSide 불필요) 기본.
@@ -181,6 +186,9 @@ class MockOKXApi:
 
         if path == "/api/v5/trade/order" and method == "POST":
             self.order_post_attempts += 1
+            if self.order_5xx_remaining > 0:
+                self.order_5xx_remaining -= 1
+                return httpx.Response(500, json={"code": "1", "msg": "server error"})
             if self.order_429_remaining > 0:
                 self.order_429_remaining -= 1
                 return httpx.Response(429, json={"code": "50011", "msg": "rate limit"})
@@ -191,6 +199,8 @@ class MockOKXApi:
             scode = self.order_scode
             if ordtype == "post_only" and self.post_only_scode != "0":
                 scode = self.post_only_scode
+            if ordtype == "ioc" and self.ioc_scode != "0":
+                scode = self.ioc_scode
             state = "filled" if ordtype in ("ioc", "limit") else "live"
             return self._ok(
                 [
@@ -208,8 +218,18 @@ class MockOKXApi:
 
         if path == "/api/v5/trade/order" and method == "GET":
             self._verify_signed(request)
+            if self.order_query_5xx:
+                return httpx.Response(500, json={"code": "1", "msg": "server error"})
+            if self.order_query_absent:
+                return httpx.Response(
+                    400, json={"code": "51603", "msg": "Order does not exist"}
+                )
             params = dict(request.url.params)
             filled = self.query_state == "filled"
+            acc = self.query_acc_fill if self.query_acc_fill is not None else (
+                "2" if filled else "0"
+            )
+            has_fill = float(acc) > 0
             return self._ok(
                 [
                     {
@@ -220,8 +240,8 @@ class MockOKXApi:
                         "side": "buy",
                         "px": str(PRICE),
                         "sz": "2",
-                        "accFillSz": "2" if filled else "0",
-                        "avgPx": str(PRICE) if filled else "",
+                        "accFillSz": acc,
+                        "avgPx": str(PRICE) if has_fill else "",
                         "reduceOnly": "false",
                     }
                 ]
@@ -834,3 +854,134 @@ def test_loader_selects_okx_source_and_cache_shape(db, monkeypatch):
     )
     assert len(cached) == len(raw)
     assert cached[0]["timeframe"] == "15m"
+
+
+# -- stop-exit chase 멱등성 + pending-unknown + 부분 체결 (finding #7/#10/#11/#12/#16) ----
+
+
+async def test_stop_exit_chase_uses_parseable_generation_coids(api, live_db):
+    """finding #11/#12: 라이브 체이스 coid는 정규형 {plan}-stop-exit-0-{n}이며
+    parse_client_order_id로 왕복 파싱된다 (모니터가 오픈 체이스 주문을
+    cancel-replace할 수 있게)."""
+    from app.agents.trader import parse_client_order_id
+
+    broker = make_db_broker(api, live_db)
+    try:
+        api.query_state = "live"  # 패시브 리밋 미체결 → cancel-replace 후 IOC
+        await broker.stop_exit_chase(
+            "BTCUSDT", "sell", 0.02, plan_id=1, attempts=2, wait_seconds=0.0
+        )
+        coids = [
+            r["client_order_id"]
+            for r in live_db.execute(
+                "SELECT client_order_id FROM paper_orders "
+                "WHERE client_order_id LIKE '%-stop-exit-%' ORDER BY id"
+            )
+        ]
+        assert coids == ["1-stop-exit-0-0", "1-stop-exit-0-1", "1-stop-exit-0-2"]
+        for c in coids:
+            parsed = parse_client_order_id(c)
+            assert parsed is not None
+            assert parsed[0] == 1 and parsed[1] == "stop-exit"
+    finally:
+        await broker.aclose()
+
+
+async def test_stop_exit_chase_reinvocation_uses_fresh_coids(api, live_db):
+    """finding #16: 재호출(복구 패스)마다 세대가 올라가 신선한 clOrdId로 실제
+    주문을 낸다 — stale 멱등 반환으로 무한 재시도/중복 POST에 빠지지 않는다."""
+    broker = make_db_broker(api, live_db)
+    try:
+        api.query_state = "live"
+        await broker.stop_exit_chase(
+            "BTCUSDT", "sell", 0.02, plan_id=1, attempts=1, wait_seconds=0.0
+        )
+        posts1 = len(api.order_posts)
+        await broker.stop_exit_chase(
+            "BTCUSDT", "sell", 0.02, plan_id=1, attempts=1, wait_seconds=0.0
+        )
+        # 2차 호출도 실제 POST가 나갔다 (stale 미러 반환이 아님).
+        assert len(api.order_posts) == posts1 + 2
+        coids = [
+            r["client_order_id"]
+            for r in live_db.execute(
+                "SELECT client_order_id FROM paper_orders "
+                "WHERE client_order_id LIKE '%-stop-exit-%' ORDER BY id"
+            )
+        ]
+        assert coids == [
+            "1-stop-exit-0-0", "1-stop-exit-0-1",
+            "1-stop-exit-0-2", "1-stop-exit-0-3",
+        ]
+    finally:
+        await broker.aclose()
+
+
+async def test_stop_exit_chase_ioc_failure_mirrors_rejected(api, live_db):
+    """finding #16: IOC 폴백이 거부되면(중복 clOrdId 등) 예외를 밖으로 던지지
+    않고 rejected로 미러해 모니터의 가드가 볼 수 있게 한다."""
+    broker = make_db_broker(api, live_db)
+    try:
+        api.query_state = "live"
+        api.ioc_scode = "51016"  # IOC 거부 (예: 중복 clOrdId)
+        order = await broker.stop_exit_chase(
+            "BTCUSDT", "sell", 0.02, plan_id=1, attempts=1, wait_seconds=0.0
+        )
+        assert order.status == "rejected"
+        assert "IOC 거부" in order.reason
+        row = live_db.execute(
+            "SELECT status FROM paper_orders WHERE client_order_id = '1-stop-exit-0-1'"
+        )[0]
+        assert row["status"] == "rejected"
+    finally:
+        await broker.aclose()
+
+
+async def test_ambiguous_placement_query_failure_mirrors_pending_open(api, live_db):
+    """finding #7: 모호한 발주(5xx) + 채택 조회 자체가 실패하면 주문이 거래소에
+    남아 있을 수 있으므로 rejected가 아니라 pending-unknown(open)으로 미러한다."""
+    broker = make_db_broker(api, live_db)
+    try:
+        api.order_5xx_remaining = 5  # POST는 계속 500
+        api.order_query_5xx = True  # 채택 조회도 500 (같은 네트워크 장애)
+        order = await broker.place_order(entry_req())
+        assert order.status == "open"
+        assert "발주 확인 불가" in order.reason
+        row = live_db.execute(
+            "SELECT status, reason FROM paper_orders "
+            "WHERE client_order_id = '1-entry-0-0'"
+        )[0]
+        assert row["status"] == "open" and "발주 확인 불가" in row["reason"]
+
+        # 이후 조회가 '미접수'로 확정되면 settle이 rejected로 해소한다.
+        api.order_5xx_remaining = 0
+        api.order_query_5xx = False
+        api.order_query_absent = True
+        changed = await asyncio.to_thread(broker.settle, None)
+        assert any(c.status == "rejected" for c in changed)
+        row = live_db.execute(
+            "SELECT status FROM paper_orders WHERE client_order_id = '1-entry-0-0'"
+        )[0]
+        assert row["status"] == "rejected"
+    finally:
+        await broker.aclose()
+
+
+async def test_settle_updates_partial_fill_on_unchanged_status(api, live_db):
+    """finding #10: 상태가 'open'(partially_filled)로 불변이어도 체결량이 늘면
+    미러 filled_qty를 갱신한다 — 실제 포지션을 든 레그가 filled_qty=0으로 고여
+    플랜이 TTL로 abandon되는 것을 막는다."""
+    broker = make_db_broker(api, live_db)
+    try:
+        await broker.place_order(entry_req())
+        api.query_state = "live"  # 상태는 여전히 live → 'open'
+        api.query_acc_fill = "1"  # 1계약 부분 체결
+        await asyncio.to_thread(broker.settle, None)
+        row = live_db.execute(
+            "SELECT status, filled_qty FROM paper_orders "
+            "WHERE client_order_id = '1-entry-0-0'"
+        )[0]
+        assert row["status"] == "open"  # 상태 불변
+        assert row["filled_qty"] == pytest.approx(0.01)  # 1계약 × ctVal 0.01
+    finally:
+        await broker.aclose()

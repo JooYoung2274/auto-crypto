@@ -80,6 +80,9 @@ class PositionMonitor:
         # 다시 판정해도 결과는 멱등 (이미 stopped/abandoned면 스킵).
         self._judged_4h: dict[int, int] = {}
         self._warned_liq: set[str] = set()
+        # 고아 포지션 경고 1회성 플래그 — 최신 플랜이 종결 상태인데 포지션이
+        # 남아 있는 심볼(수동/미러갭 고아)을 매 틱 재경고하지 않기 위함.
+        self._warned_orphan: set[tuple[str, str]] = set()
         # 일손실 서킷브레이커 발동 경고 1회성 플래그 (라이브 브로커 한정).
         self._kill_announced = False
         # 재기동 시 펀딩 이력 전체를 activity_log/WS로 재방송하지 않도록
@@ -233,17 +236,23 @@ class PositionMonitor:
             plan_id = int(row["id"])
             plan = TradePlan.from_json(row["plan_json"])
             orders = self.db.execute(
-                "SELECT client_order_id, status FROM paper_orders WHERE plan_id = ?",
+                "SELECT client_order_id, status, filled_qty FROM paper_orders "
+                "WHERE plan_id = ?",
                 (plan_id,),
             )
             fraction = 0.0
             seen: set[int] = set()
             for o in orders:
                 leg = parse_client_order_id(o["client_order_id"])
+                # 부분 체결 가시화 (finding #17): 라이브 partially_filled는 미러
+                # 상태가 'open'으로 남으므로, filled_qty > 0이면 상태가 아직
+                # 'filled'가 아니어도 이 레그의 비중을 (보수적으로) 인정한다 —
+                # 실제 포지션을 든 플랜을 TTL이 abandon하지 못하게.
+                filled = o["status"] == "filled" or float(o["filled_qty"] or 0.0) > 0
                 if (
                     leg is None
                     or leg[1] != "entry"
-                    or o["status"] != "filled"
+                    or not filled
                     or leg[2] in seen
                     or leg[2] >= len(plan.entries)
                 ):
@@ -328,8 +337,14 @@ class PositionMonitor:
         """진입 전 plan_ttl_bars 경과 → 래더 전량 취소 (abandoned)."""
         tf_ms = _TF_MS.get(self.settings.execution_timeframe, _TF_MS["15m"])
         ttl_ms = self.settings.plan_ttl_bars * tf_ms
+        held = {(p.symbol, p.side) for p in await broker.get_positions()}
         for row in open_plans(self.db):
             if float(row["filled_fraction"] or 0.0) > 0:
+                continue
+            # 부분 체결이 미러에 아직 반영되지 않았어도(라이브 partially_filled)
+            # 같은 방향 실제 포지션이 있으면 abandon 금지 — 고아 포지션 방지
+            # (finding #17). 포지션은 스탑엑싯/종료 경로가 정리한다.
+            if (row["symbol"], row["side"]) in held:
                 continue
             created_ms = _parse_iso_ms(row["created_at"])
             if now_ms - created_ms < ttl_ms:
@@ -363,7 +378,9 @@ class PositionMonitor:
         포지션 보유 중 이탈 → 자식 주문 전량 취소 + 공격적 reduce-only
         스탑엑싯 (taker). 진입 전 이탈 → 플랜 무효화(abandoned).
         미완결 4h봉으로는 절대 판정하지 않는다."""
-        positions = {p.symbol: p for p in await broker.get_positions()}
+        # 헤지 모드(long_short_mode) 대응: (심볼, 방향)으로 키잉해 같은 심볼의
+        # 반대 방향(수동) 포지션과 섞이지 않게 한다 (finding #5).
+        positions = {(p.symbol, p.side): p for p in await broker.get_positions()}
         for row in open_plans(self.db):
             plan_id = int(row["id"])
             plan = TradePlan.from_json(row["plan_json"])
@@ -389,7 +406,7 @@ class PositionMonitor:
             if not breached:
                 self._judged_4h[plan_id] = close_ms
                 continue
-            pos = positions.get(plan.symbol)
+            pos = positions.get((plan.symbol, plan.side))
             if pos is not None:
                 await self._cancel_plan_orders(
                     broker, plan_id, plan.symbol, "손절 판정 — 잔여 주문 취소"
@@ -454,7 +471,12 @@ class PositionMonitor:
             return
         chase = getattr(broker, "stop_exit_chase", None)
         if chase is not None:
-            await chase(plan.symbol, exit_side, qty, plan_id=plan_id)
+            # attempt(=기존 스탑엑싯 미러 행 수)를 체이스 coid 세대(generation)로
+            # 넘긴다 — 재발주마다 파싱 가능한 신선한 clOrdId를 쓰게 해
+            # 재호출 시 clOrdId 재사용/무한 루프를 막는다 (finding #11/#12/#16).
+            await chase(
+                plan.symbol, exit_side, qty, plan_id=plan_id, start_attempt=attempt
+            )
             return
         quote = await broker.get_quote(plan.symbol)
         await broker.place_order(
@@ -478,24 +500,31 @@ class PositionMonitor:
         복구 패스가 먼저 돈다: stopped 플랜에 포지션이 남아 있는데 오픈
         스탑엑싯 주문이 하나도 없으면(취소~재발주 사이 크래시 등) 새
         스탑엑싯을 발주한다 — 손절 판정된 포지션은 반드시 청산된다."""
-        positions = {p.symbol: p for p in await broker.get_positions()}
+        # (심볼, 방향)으로 키잉 — 헤지 모드 반대 방향 포지션과 섞이지 않게 (finding #5).
+        positions = {(p.symbol, p.side): p for p in await broker.get_positions()}
         for row in self.db.execute(
             "SELECT * FROM trade_plans WHERE status = 'stopped' ORDER BY id"
         ):
             plan_id = int(row["id"])
-            pos = positions.get(row["symbol"])
+            pos = positions.get((row["symbol"], row["side"]))
             if pos is None or pos.qty <= 1e-12:
                 continue
-            # 포지션 소유권 가드: 이 심볼에 더 새로운 플랜(오픈 또는 그쪽의
-            # stopped)이 있으면 지금 포지션은 그 플랜 소유다 — 과거 stopped
-            # 플랜의 '복구'가 새 포지션을 청산해선 안 된다 (2026-07-21 실계정
-            # 무한 재발주 사고 회귀 방지).
-            newer = self.db.execute(
-                "SELECT id FROM trade_plans WHERE symbol = ? AND id > ? "
-                "AND status IN ('approved', 'active', 'stopped') LIMIT 1",
-                (row["symbol"], plan_id),
-            )
-            if newer:
+            # 포지션 소유권 가드 (2026-07-21 실계정 무한 재발주 사고 회귀 방지):
+            # 이 심볼에 더 새로운 플랜이 하나라도 있으면(상태 불문 — closed/
+            # abandoned/rejected 포함) 그 플랜이 생성됐다는 사실 자체가 옛
+            # 포지션이 이미 정리됐음을 증명한다 → 지금 포지션은 이 옛 stopped
+            # 플랜 소유가 아니다. 절대 복구 발주하지 않는다 (finding #1/#8).
+            newest = self.db.execute(
+                "SELECT id, status FROM trade_plans WHERE symbol = ? "
+                "ORDER BY id DESC LIMIT 1",
+                (row["symbol"],),
+            )[0]
+            if int(newest["id"]) != plan_id:
+                # 최신 플랜이 종결 상태(approved/active/stopped 아님)인데도
+                # 같은 방향 포지션이 남았다면 어떤 플랜도 관리하지 않는 고아/
+                # 수동 포지션이다 — 발주 금지, 경고만 (심볼·방향당 1회).
+                if newest["status"] not in ("approved", "active", "stopped"):
+                    await self._warn_orphan_position(row["symbol"], row["side"], pos)
                 continue
             if self.db.execute(
                 "SELECT id FROM paper_orders WHERE plan_id = ? "
@@ -563,16 +592,19 @@ class PositionMonitor:
     async def _close_finished_plans(self, broker: Broker, now_ms: int) -> None:
         """포지션이 사라진 active 플랜 종료: 강제 청산이면 stopped(전액 손실),
         아니면 최종 익절 closed — 어느 쪽이든 자식 주문 전량 취소 (스펙 §2)."""
-        positions = {p.symbol for p in await broker.get_positions()}
+        # (심볼, 방향) 집합 — 헤지 모드 반대 방향 포지션이 플랜을 영구 active로
+        # 고정하지 못하게 (finding #5).
+        positions = {(p.symbol, p.side) for p in await broker.get_positions()}
         for row in self.db.execute(
             "SELECT * FROM trade_plans WHERE status IN ('active', 'stopped') "
             "ORDER BY id"
         ):
             plan_id = int(row["id"])
             symbol = row["symbol"]
+            side = row["side"]
             if float(row["filled_fraction"] or 0.0) <= 0:
                 continue
-            if symbol in positions:
+            if (symbol, side) in positions:
                 continue
             open_orders = self.db.execute(
                 "SELECT id FROM paper_orders WHERE plan_id = ? AND status = 'open'",
@@ -581,14 +613,27 @@ class PositionMonitor:
             # ts 형식 정규화 비교 — paper_orders.ts는 'T' 구분자(+00:00),
             # trade_plans.created_at은 SQLite datetime('now') 공백 구분자라
             # 바이트 비교가 어긋난다. 두 쪽 다 'YYYY-MM-DD HH:MM:SS'로
-            # 잘라 비교하고, plan_id가 찍힌 청산 행은 그것만 신뢰한다.
+            # 잘라 비교하고, 청산 귀속은 다음 플랜 생성 시각으로 상한을 둔다.
+            next_created = self.db.execute(
+                "SELECT MIN(created_at) AS c FROM trade_plans "
+                "WHERE symbol = ? AND id > ?",
+                (symbol, plan_id),
+            )[0]["c"]
+            liq_params: list = [symbol, plan_id, row["created_at"]]
+            upper_sql = ""
+            if next_created is not None:
+                upper_sql = (
+                    "AND substr(replace(ts, 'T', ' '), 1, 19) < "
+                    "substr(replace(?, 'T', ' '), 1, 19) "
+                )
+                liq_params.append(next_created)
             liq_rows = self.db.execute(
-                "SELECT id FROM paper_orders WHERE symbol = ? AND status = 'filled' "
-                "AND reason LIKE '%강제 청산%' "
+                "SELECT id, plan_id FROM paper_orders WHERE symbol = ? "
+                "AND status = 'filled' AND reason LIKE '%강제 청산%' "
                 "AND (plan_id = ? OR (plan_id IS NULL AND "
                 "substr(replace(ts, 'T', ' '), 1, 19) >= "
-                "substr(replace(?, 'T', ' '), 1, 19))) LIMIT 1",
-                (symbol, plan_id, row["created_at"]),
+                "substr(replace(?, 'T', ' '), 1, 19) " + upper_sql + ")) ORDER BY id",
+                tuple(liq_params),
             )
             if row["status"] == "stopped":
                 # 스탑엑싯 체결 완료 — 잔여 주문만 정리.
@@ -598,6 +643,15 @@ class PositionMonitor:
                     )
                 continue
             if liq_rows:
+                # 귀속한 plan_id-NULL 청산 행에 plan_id를 스탬핑 — 이후
+                # trade-history가 심볼+윈도가 아니라 plan_id로만 청산을
+                # 집계할 수 있게 (finding #3, 재진입 이중계상 방지).
+                for lr in liq_rows:
+                    if lr["plan_id"] is None:
+                        self.db.execute(
+                            "UPDATE paper_orders SET plan_id = ? WHERE id = ?",
+                            (plan_id, lr["id"]),
+                        )
                 await self._cancel_plan_orders(
                     broker, plan_id, symbol, "청산으로 취소"
                 )
@@ -618,25 +672,56 @@ class PositionMonitor:
                         data={"plan_id": plan_id},
                     )
                 )
-            else:
+                continue
+            # 라이브 강제 청산 폴백 (finding #2/#10/#14/#19): 봇이 낸 reduce-only
+            # 체결(익절/스탑엑싯)이 하나도 없이 포지션이 사라졌다면 거래소측
+            # 강제 청산 서명이다 — '최종 익절'로 오분류하지 말고 청산 의심으로
+            # stopped 처리 + 경고. (paper 청산은 위 liq_rows 경로로 잡힌다.)
+            bot_exit = self.db.execute(
+                "SELECT id FROM paper_orders WHERE plan_id = ? AND status = 'filled' "
+                "AND reduce_only = 1 LIMIT 1",
+                (plan_id,),
+            )
+            if not bot_exit:
                 await self._cancel_plan_orders(
-                    broker, plan_id, symbol, "최종 익절 — 잔여 주문 취소"
+                    broker, plan_id, symbol, "강제 청산 의심 — 잔여 주문 취소"
                 )
                 self.db.execute(
-                    "UPDATE trade_plans SET status = 'closed' WHERE id = ?",
+                    "UPDATE trade_plans SET status = 'stopped', "
+                    "reject_reason = '강제 청산 의심' WHERE id = ?",
                     (plan_id,),
                 )
                 await self.bus.publish(
                     Event(
                         type="log",
                         agent="trader",
+                        level="warning",
                         message=(
-                            f"{symbol} 포지션 종료 — 플랜 #{plan_id} closed, "
-                            f"잔여 주문 전량 취소"
+                            f"{symbol} 포지션 소멸 — 플랜 #{plan_id} 청산 의심 "
+                            f"(봇 청산 체결 없음), 손절 처리"
                         ),
                         data={"plan_id": plan_id},
                     )
                 )
+                continue
+            await self._cancel_plan_orders(
+                broker, plan_id, symbol, "최종 익절 — 잔여 주문 취소"
+            )
+            self.db.execute(
+                "UPDATE trade_plans SET status = 'closed' WHERE id = ?",
+                (plan_id,),
+            )
+            await self.bus.publish(
+                Event(
+                    type="log",
+                    agent="trader",
+                    message=(
+                        f"{symbol} 포지션 종료 — 플랜 #{plan_id} closed, "
+                        f"잔여 주문 전량 취소"
+                    ),
+                    data={"plan_id": plan_id},
+                )
+            )
 
     async def _liquidation_warnings(self, broker: Broker) -> None:
         """markPrice가 청산가 LIQ_WARN_BAND 이내로 접근하면 경고 이벤트."""
@@ -673,6 +758,27 @@ class PositionMonitor:
         self._warned_liq &= seen
 
     # -- helpers -------------------------------------------------------------------
+    async def _warn_orphan_position(self, symbol: str, side: str, pos) -> None:
+        """최신 플랜이 종결 상태인데 같은 방향 포지션이 남아 있는 고아/수동
+        포지션 경고 — 절대 주문하지 않고 운영자에게 알리기만 (심볼·방향당 1회)."""
+        key = (symbol, side)
+        if key in self._warned_orphan:
+            return
+        self._warned_orphan.add(key)
+        await self.bus.publish(
+            Event(
+                type="liquidation_warning",
+                agent="risk",
+                level="warning",
+                message=(
+                    f"{symbol} {side} 고아 포지션 감지 — 최신 플랜이 종결 상태인데 "
+                    f"포지션 {pos.qty:g} 잔존 (수동/미러갭 의심), 자동 청산 금지 — "
+                    f"운영자 확인 필요"
+                ),
+                data={"symbol": symbol, "side": side, "qty": pos.qty},
+            )
+        )
+
     async def _cancel_plan_orders(
         self, broker: Broker, plan_id: int, symbol: str, reason: str
     ) -> None:

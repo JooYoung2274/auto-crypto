@@ -663,3 +663,115 @@ def test_trade_history_rollup(client):
     stop_row = next(r for r in rows if r["symbol"] == "XRPUSDT")
     assert stop_row["exit_reason"] == "손절"
     assert stop_row["pnl_usdt"] == pytest.approx(-3.0)  # (1.10-1.13)×100
+
+
+def test_trade_history_liquidation_bounded_by_next_plan(client):
+    """finding #3/#13: 재진입 심볼에서 plan_id-NULL 강제 청산 행은 다음 플랜
+    생성 시각을 상한으로 귀속된다 — 나중 플랜의 청산을 옛 플랜에 이중계상하지
+    않는다."""
+    db = client.app.state.db
+    pj = json.dumps({"leverage": 3})
+    a = db.execute(
+        "INSERT INTO trade_plans (created_at, symbol, side, plan_json, status, "
+        "filled_fraction, reject_reason) VALUES ('2026-07-20T00:00:00+00:00', "
+        "'DOGEUSDT', 'long', ?, 'stopped', 1.0, '강제 청산')", (pj,),
+    )[0]["id"]
+    db.execute(
+        "INSERT INTO paper_orders (ts, symbol, side, qty, limit_price, filled_qty, "
+        "avg_fill_price, reduce_only, status, plan_id) VALUES "
+        "('2026-07-20T00:10:00+00:00','DOGEUSDT','buy',1000,0.10,1000,0.10,0,'filled',?)",
+        (a,),
+    )
+    db.execute(  # 청산 A (plan_id NULL) — T1
+        "INSERT INTO paper_orders (ts, symbol, side, qty, limit_price, filled_qty, "
+        "avg_fill_price, reduce_only, status, reason) VALUES "
+        "('2026-07-20T01:00:00+00:00','DOGEUSDT','sell',1000,0.08,1000,0.08,1,'filled',"
+        "'강제 청산 — 격리마진 전액 손실')"
+    )
+    b = db.execute(  # 재진입 플랜 B (created T2 > T1)
+        "INSERT INTO trade_plans (created_at, symbol, side, plan_json, status, "
+        "filled_fraction, reject_reason) VALUES ('2026-07-20T02:00:00+00:00', "
+        "'DOGEUSDT', 'long', ?, 'stopped', 1.0, '강제 청산')", (pj,),
+    )[0]["id"]
+    db.execute(
+        "INSERT INTO paper_orders (ts, symbol, side, qty, limit_price, filled_qty, "
+        "avg_fill_price, reduce_only, status, plan_id) VALUES "
+        "('2026-07-20T02:10:00+00:00','DOGEUSDT','buy',1000,0.09,1000,0.09,0,'filled',?)",
+        (b,),
+    )
+    db.execute(  # 청산 B (plan_id NULL) — T3
+        "INSERT INTO paper_orders (ts, symbol, side, qty, limit_price, filled_qty, "
+        "avg_fill_price, reduce_only, status, reason) VALUES "
+        "('2026-07-20T03:00:00+00:00','DOGEUSDT','sell',1000,0.07,1000,0.07,1,'filled',"
+        "'강제 청산 — 격리마진 전액 손실')"
+    )
+    rows = {r["plan_id"]: r for r in client.get("/api/trade-history").json()}
+    # 플랜 A는 L1(0.08)만, 플랜 B는 L2(0.07)만 — 섞이지 않는다.
+    assert rows[a]["avg_exit"] == pytest.approx(0.08)
+    assert rows[b]["avg_exit"] == pytest.approx(0.07)
+
+
+def test_position_info_stopped_plan_keeps_funding_window(client):
+    """finding #4: 포지션을 소유한 플랜이 'stopped'(스탑엑싯 체이스 중)여도 현
+    포지션에 귀속된 펀딩 윈도·tp_lines·stop_price를 유지한다 — 심볼 전체 이력을
+    무한 합산하지 않는다."""
+    db = client.app.state.db
+    old_pj = json.dumps({"leverage": 3, "stop": {"price": 80.0}, "tps": []})
+    db.execute(  # 옛 종료 플랜 + 그 시기 펀딩 (현 포지션에 귀속되면 안 됨)
+        "INSERT INTO trade_plans (created_at, symbol, side, plan_json, status, "
+        "filled_fraction) VALUES ('2026-07-01T00:00:00+00:00','BTCUSDT','long', ?, "
+        "'closed', 1.0)", (old_pj,),
+    )
+    db.execute(
+        "INSERT INTO funding_payments (ts, symbol, side, rate, payment) "
+        "VALUES ('2026-07-01T08:00:00+00:00','BTCUSDT','long',-0.0001, 5.0)"
+    )
+    stopped_pj = json.dumps(
+        {"leverage": 3, "stop": {"price": 90.0},
+         "tps": [{"price": 110.0, "fraction": 1.0}]}
+    )
+    db.execute(  # 현 포지션을 소유한 stopped 플랜 (최신)
+        "INSERT INTO trade_plans (created_at, symbol, side, plan_json, status, "
+        "filled_fraction) VALUES ('2026-07-20T00:00:00+00:00','BTCUSDT','long', ?, "
+        "'stopped', 1.0)", (stopped_pj,),
+    )
+    db.execute(  # stopped 플랜 시기 펀딩 (윈도 안)
+        "INSERT INTO funding_payments (ts, symbol, side, rate, payment) "
+        "VALUES ('2026-07-20T08:00:00+00:00','BTCUSDT','long',-0.0001, 2.0)"
+    )
+    db.execute(
+        "INSERT INTO paper_positions (symbol, side, qty, avg_entry, leverage, "
+        "isolated_margin, liq_price) VALUES ('BTCUSDT','long',0.5,100.0,3,16.6,90.0)"
+    )
+    pos = client.get("/api/positions").json()[0]
+    assert pos["funding_paid"] == pytest.approx(-2.0)  # 옛 5.0은 제외
+    assert pos["stop_price"] == 90.0
+    assert pos["tp_lines"] and pos["tp_lines"][0]["price"] == 110.0
+
+
+def test_prune_activity_log_normalizes_t_format():
+    """finding #15: activity_log.ts는 'T' 구분자로 기록되고 보존 임계는 SQLite
+    공백 구분자라 바이트 비교가 어긋난다 — 정규화로 경계일 행이 하루 더 남지
+    않게 정상 삭제한다."""
+    db = Database(":memory:")
+    try:
+        now = dt.datetime.now(dt.timezone.utc)
+        cutoff = now - dt.timedelta(days=2)
+        boundary = (cutoff - dt.timedelta(seconds=1)).strftime(
+            "%Y-%m-%dT%H:%M:%S+00:00"
+        )
+        fresh = now.strftime("%Y-%m-%dT%H:%M:%S+00:00")
+        db.execute(
+            "INSERT INTO activity_log (ts, event_type, message) "
+            "VALUES (?, 'log', 'boundary')", (boundary,)
+        )
+        db.execute(
+            "INSERT INTO activity_log (ts, event_type, message) "
+            "VALUES (?, 'log', 'fresh')", (fresh,)
+        )
+        db.prune_activity_log(days=2)
+        msgs = [r["message"] for r in db.execute("SELECT message FROM activity_log")]
+        assert "boundary" not in msgs  # 'T' 형식 경계 행이 정상 삭제
+        assert "fresh" in msgs
+    finally:
+        db.close()

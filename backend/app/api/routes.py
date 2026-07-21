@@ -405,10 +405,15 @@ def _position_info(pos: Position, db: Database, now_ms: int) -> dict:
     # funding_paid는 **현재 포지션**에 귀속된 펀딩만 합산한다 (심볼 전체 이력이
     # 아니라). 현재 열린 플랜의 최초 진입 체결 시각 이후 정산분만 — 없으면 플랜
     # created_at 폴백. ts 형식 혼용(‘T’+offset vs SQLite 공백)은 substr 정규화로 흡수.
+    # 'stopped'도 포함 — 4h 손절 판정 후 스탑엑싯이 아직 체이스 중인(수 분,
+    # 미체결이면 더 긴) 포지션도 올바른 펀딩 윈도·tp_lines·stop_price를
+    # 유지하게 (finding #4). 방향도 매칭 — 헤지 모드 반대 방향 포지션에 이
+    # 플랜의 라인을 붙이지 않게 (finding #5).
     plan_rows = db.execute(
         "SELECT id, created_at, plan_json FROM trade_plans WHERE symbol = ? "
-        "AND status IN ('approved', 'active') ORDER BY id DESC LIMIT 1",
-        (pos.symbol,),
+        "AND side = ? AND status IN ('approved', 'active', 'stopped') "
+        "ORDER BY id DESC LIMIT 1",
+        (pos.symbol, pos.side),
     )
     # 익절/손절 라인 (포트폴리오 표시용): 실제로 걸려 있는 reduce-only TP
     # 주문을 우선 사용하고, 아직 발주 전이면 플랜의 TP 레그로 폴백.
@@ -453,11 +458,30 @@ def _position_info(pos: Position, db: Database, now_ms: int) -> dict:
             (pos.symbol, threshold),
         )
     else:
-        funding_rows = db.execute(
-            "SELECT COALESCE(SUM(payment), 0) AS total FROM funding_payments "
-            "WHERE symbol = ?",
-            (pos.symbol,),
+        # 소유 플랜이 approved/active/stopped 중 없어도 심볼 전체 이력을 무한
+        # 합산하지 않는다 (finding #4): rejected/abandoned를 제외한 최신 플랜의
+        # created_at을 펀딩 임계로 쓰고, 그런 플랜도 없을 때만 전체 합산.
+        fallback = db.execute(
+            "SELECT created_at FROM trade_plans WHERE symbol = ? AND side = ? "
+            "AND status NOT IN ('rejected', 'abandoned') ORDER BY id DESC LIMIT 1",
+            (pos.symbol, pos.side),
         )
+        if fallback:
+            threshold = db.execute(
+                "SELECT substr(replace(?, 'T', ' '), 1, 19) AS t",
+                (fallback[0]["created_at"],),
+            )[0]["t"]
+            funding_rows = db.execute(
+                "SELECT COALESCE(SUM(payment), 0) AS total FROM funding_payments "
+                "WHERE symbol = ? AND substr(replace(ts, 'T', ' '), 1, 19) >= ?",
+                (pos.symbol, threshold),
+            )
+        else:
+            funding_rows = db.execute(
+                "SELECT COALESCE(SUM(payment), 0) AS total FROM funding_payments "
+                "WHERE symbol = ?",
+                (pos.symbol,),
+            )
     return {
         "symbol": pos.symbol,
         "side": pos.side,
@@ -516,12 +540,29 @@ async def get_trade_history(request: Request, limit: int = 50) -> list[dict]:
         exits = [f for f in fills if f["reduce_only"]]
         liquidated = plan_row["reject_reason"] == "강제 청산"
         if liquidated:
+            # plan_id가 스탬핑된 청산 행은 이미 위 exits(plan_id = ?)에 포함된다.
+            # 레거시 plan_id-NULL 청산 행만, 다음 플랜 생성 시각을 상한으로 두고
+            # 귀속한다 — 재진입 심볼의 나중 청산을 이 플랜에 이중계상하지 않게
+            # (finding #3/#13).
+            next_created = db.execute(
+                "SELECT MIN(created_at) AS c FROM trade_plans "
+                "WHERE symbol = ? AND id > ?",
+                (plan_row["symbol"], plan_id),
+            )[0]["c"]
+            params: list = [plan_row["symbol"], plan_row["created_at"]]
+            upper = ""
+            if next_created is not None:
+                upper = (
+                    "AND substr(replace(ts, 'T', ' '), 1, 19) < "
+                    "substr(replace(?, 'T', ' '), 1, 19) "
+                )
+                params.append(next_created)
             exits += db.execute(
                 "SELECT * FROM paper_orders WHERE symbol = ? AND status = 'filled' "
                 "AND plan_id IS NULL AND reason LIKE '%강제 청산%' "
                 "AND substr(replace(ts, 'T', ' '), 1, 19) >= "
-                "substr(replace(?, 'T', ' '), 1, 19) ORDER BY id",
-                (plan_row["symbol"], plan_row["created_at"]),
+                "substr(replace(?, 'T', ' '), 1, 19) " + upper + "ORDER BY id",
+                tuple(params),
             )
         if not entries or not exits:
             continue

@@ -661,3 +661,233 @@ async def test_stop_exit_recovery_fires_for_latest_stopped_plan(db, settings, br
         "SELECT * FROM paper_orders WHERE client_order_id LIKE '%-stop-exit-%'"
     )
     assert len(exits) == 1 and exits[0]["reduce_only"]
+
+
+def _plan_json(side: str = "short") -> str:
+    return json.dumps(
+        {"symbol": SYMBOL, "side": side, "leverage": 3, "entries": [], "tps": [],
+         "stop": {"kind": "stop", "price": 999.0, "fraction": 1.0},
+         "evidence": [], "margin_usdt": 100.0}
+    )
+
+
+async def test_stop_exit_recovery_disowns_when_newer_terminal_plan(
+    db, settings, broker
+):
+    """finding #1/#8: 같은 심볼에 더 새로운 플랜이 (closed/abandoned 같은) 종결
+    상태로라도 존재하면, 과거 stopped 플랜의 복구는 발동하지 않는다 — 그리고
+    최신 플랜이 종결됐는데 포지션이 남았으면 고아 경고만 내고 절대 발주하지
+    않는다 (2026-07-21 사고 한 상태값 차이 재발 방지)."""
+    db.execute(
+        "INSERT INTO trade_plans (symbol, side, plan_json, status, filled_fraction) "
+        "VALUES (?, 'short', ?, 'stopped', 1.0)", (SYMBOL, _plan_json()),
+    )
+    db.execute(  # 최신 플랜은 이미 익절 종료(closed) — 옛 stopped 가드에 없던 상태값
+        "INSERT INTO trade_plans (symbol, side, plan_json, status, filled_fraction) "
+        "VALUES (?, 'short', ?, 'closed', 1.0)", (SYMBOL, _plan_json()),
+    )
+    db.execute(
+        "INSERT INTO paper_positions (symbol, side, qty, avg_entry, leverage, "
+        "isolated_margin, liq_price) VALUES (?, 'short', 10.0, 100.0, 3, 333.0, 130.0)",
+        (SYMBOL,),
+    )
+    monitor = make_monitor(db, settings, broker, NOW_MS)
+    before = len(db.execute("SELECT id FROM paper_orders"))
+    await monitor._drive_stop_exits(broker, NOW_MS)
+    assert len(db.execute("SELECT id FROM paper_orders")) == before  # 발주 없음
+    warns = db.execute(
+        "SELECT * FROM activity_log WHERE event_type = 'liquidation_warning'"
+    )
+    assert warns and "고아" in warns[0]["message"]
+
+
+async def test_stop_exit_recovery_skips_on_opposite_side_position(
+    db, settings, broker
+):
+    """finding #5 (헤지 모드): stopped 롱 플랜이 최신이어도 심볼의 실제 포지션이
+    (수동) 숏이면 복구가 발동하지 않는다 — 반대 방향 포지션을 옛 플랜이
+    청산해선 안 된다."""
+    db.execute(
+        "INSERT INTO trade_plans (symbol, side, plan_json, status, filled_fraction) "
+        "VALUES (?, 'long', ?, 'stopped', 1.0)", (SYMBOL, _plan_json("long")),
+    )
+    db.execute(  # 수동 반대 방향(숏) 포지션
+        "INSERT INTO paper_positions (symbol, side, qty, avg_entry, leverage, "
+        "isolated_margin, liq_price) VALUES (?, 'short', 10.0, 100.0, 3, 333.0, 130.0)",
+        (SYMBOL,),
+    )
+    monitor = make_monitor(db, settings, broker, NOW_MS)
+    before = len(db.execute("SELECT id FROM paper_orders"))
+    await monitor._drive_stop_exits(broker, NOW_MS)
+    assert len(db.execute("SELECT id FROM paper_orders")) == before  # 발주 없음
+
+
+async def test_close_finished_marks_live_liquidation_suspect(db, settings, broker):
+    """finding #2/#19: active 플랜의 포지션이 봇 청산(reduce-only) 체결 없이
+    사라지면(라이브 강제 청산 서명) '최종 익절 closed'가 아니라 '강제 청산
+    의심 stopped'로 처리한다."""
+    db.execute(
+        "INSERT INTO trade_plans (symbol, side, plan_json, status, filled_fraction) "
+        "VALUES (?, 'long', ?, 'active', 1.0)", (SYMBOL, _plan_json("long")),
+    )
+    db.execute(  # 진입 체결만 있고 reduce-only 청산 체결은 없음
+        "INSERT INTO paper_orders (symbol, side, qty, limit_price, filled_qty, "
+        "avg_fill_price, reduce_only, status, plan_id, client_order_id, reason) "
+        "VALUES (?, 'buy', 10, 100, 10, 100, 0, 'filled', 1, '1-entry-0-0', '')",
+        (SYMBOL,),
+    )
+    monitor = make_monitor(db, settings, broker, NOW_MS)
+    await monitor._close_finished_plans(broker, NOW_MS)
+    row = db.execute(
+        "SELECT status, reject_reason FROM trade_plans WHERE id = 1"
+    )[0]
+    assert row["status"] == "stopped"
+    assert row["reject_reason"] == "강제 청산 의심"
+
+
+async def test_close_finished_takeprofit_stays_closed(db, settings, broker):
+    """대조군: reduce-only 익절 체결이 있으면 정상 종료(closed)로 분류된다
+    (청산 폴백이 정상 익절을 오분류하지 않는다)."""
+    db.execute(
+        "INSERT INTO trade_plans (symbol, side, plan_json, status, filled_fraction) "
+        "VALUES (?, 'long', ?, 'active', 1.0)", (SYMBOL, _plan_json("long")),
+    )
+    db.execute(
+        "INSERT INTO paper_orders (symbol, side, qty, limit_price, filled_qty, "
+        "avg_fill_price, reduce_only, status, plan_id, client_order_id, reason) "
+        "VALUES (?, 'buy', 10, 100, 10, 100, 0, 'filled', 1, '1-entry-0-0', '')",
+        (SYMBOL,),
+    )
+    db.execute(  # 익절 체결(reduce-only)
+        "INSERT INTO paper_orders (symbol, side, qty, limit_price, filled_qty, "
+        "avg_fill_price, reduce_only, status, plan_id, client_order_id, reason) "
+        "VALUES (?, 'sell', 10, 120, 10, 120, 1, 'filled', 1, '1-tp-0-0', '')",
+        (SYMBOL,),
+    )
+    monitor = make_monitor(db, settings, broker, NOW_MS)
+    await monitor._close_finished_plans(broker, NOW_MS)
+    row = db.execute("SELECT status FROM trade_plans WHERE id = 1")[0]
+    assert row["status"] == "closed"
+
+
+async def test_close_finished_stamps_liquidation_row_plan_id(db, settings, broker):
+    """finding #3: 귀속한 plan_id-NULL 강제 청산 행에 plan_id를 스탬핑한다 —
+    이후 trade-history가 심볼+윈도가 아니라 plan_id로만 청산을 집계할 수 있게."""
+    db.execute(
+        "INSERT INTO trade_plans (symbol, side, plan_json, status, filled_fraction) "
+        "VALUES (?, 'long', ?, 'active', 1.0)", (SYMBOL, _plan_json("long")),
+    )
+    db.execute(
+        "INSERT INTO paper_orders (symbol, side, qty, limit_price, filled_qty, "
+        "avg_fill_price, reduce_only, status, plan_id, client_order_id, reason) "
+        "VALUES (?, 'buy', 10, 100, 10, 100, 0, 'filled', 1, '1-entry-0-0', '')",
+        (SYMBOL,),
+    )
+    db.execute(  # paper 강제 청산 행 — plan_id NULL (paper._liquidate 산출물)
+        "INSERT INTO paper_orders (symbol, side, qty, limit_price, filled_qty, "
+        "avg_fill_price, reduce_only, aggressive, status, reason) "
+        "VALUES (?, 'sell', 10, 90, 10, 90, 1, 1, 'filled', "
+        "'강제 청산 — 격리마진 전액 손실')", (SYMBOL,),
+    )
+    monitor = make_monitor(db, settings, broker, NOW_MS)
+    await monitor._close_finished_plans(broker, NOW_MS)
+    liq = db.execute(
+        "SELECT plan_id FROM paper_orders WHERE reason LIKE '%강제 청산%'"
+    )[0]
+    assert liq["plan_id"] == 1
+    row = db.execute("SELECT status, reject_reason FROM trade_plans WHERE id = 1")[0]
+    assert row["status"] == "stopped" and row["reject_reason"] == "강제 청산"
+
+
+async def test_plan_ttl_skips_abandon_when_position_held(db, tmp_path, broker):
+    """finding #17: 미러 filled_fraction이 0이어도 같은 방향 실제 포지션이
+    있으면 플랜을 abandon하지 않는다 — 라이브 부분 체결이 미러에 아직 안 잡힌
+    포지션을 고아로 만들지 않게."""
+    settings = make_settings(tmp_path, plan_ttl_bars=1)  # ttl = 1 × 15m
+    db.execute(
+        "INSERT INTO trade_plans (created_at, symbol, side, plan_json, status, "
+        "filled_fraction) VALUES (datetime('now', '-1 hour'), ?, 'long', ?, "
+        "'approved', 0.0)", (SYMBOL, _plan_json("long")),
+    )
+    db.execute(
+        "INSERT INTO paper_positions (symbol, side, qty, avg_entry, leverage, "
+        "isolated_margin, liq_price) VALUES (?, 'long', 5.0, 100.0, 5, 100.0, 80.0)",
+        (SYMBOL,),
+    )
+    monitor = make_monitor(db, settings, broker, NOW_MS)
+    await monitor._enforce_plan_ttl(broker, NOW_MS)
+    assert db.execute("SELECT status FROM trade_plans WHERE id = 1")[0]["status"] == (
+        "approved"
+    )
+
+
+async def test_plan_ttl_abandons_without_position(db, tmp_path, broker):
+    """대조군: 포지션이 없으면 TTL 만료 플랜은 정상적으로 abandoned 된다."""
+    settings = make_settings(tmp_path, plan_ttl_bars=1)
+    db.execute(
+        "INSERT INTO trade_plans (created_at, symbol, side, plan_json, status, "
+        "filled_fraction) VALUES (datetime('now', '-1 hour'), ?, 'long', ?, "
+        "'approved', 0.0)", (SYMBOL, _plan_json("long")),
+    )
+    monitor = make_monitor(db, settings, broker, NOW_MS)
+    await monitor._enforce_plan_ttl(broker, NOW_MS)
+    assert db.execute("SELECT status FROM trade_plans WHERE id = 1")[0]["status"] == (
+        "abandoned"
+    )
+
+
+async def test_reconcile_counts_partial_fill_before_status_filled(
+    db, settings, broker, trader, monkeypatch
+):
+    """finding #17: 진입 레그가 아직 'open'(라이브 partially_filled)이어도
+    filled_qty > 0이면 그 레그 비중을 인정한다 — 실제 포지션을 든 플랜을
+    filled_fraction=0으로 두어 TTL이 abandon하지 못하게."""
+    monkeypatch.setattr(Trader, "_build_plan", staticmethod(fixed_long_plan))
+    await run_execute(trader, db, broker, settings)
+    plan_id = db.execute("SELECT id FROM trade_plans")[0]["id"]
+    entry = db.execute(
+        "SELECT id FROM paper_orders WHERE plan_id = ? "
+        "AND client_order_id LIKE '%-entry-%' ORDER BY id LIMIT 1", (plan_id,),
+    )[0]
+    # 상태는 'open' 그대로, 체결량만 반영 (라이브 partially_filled 서명).
+    db.execute(
+        "UPDATE paper_orders SET filled_qty = 1.0 WHERE id = ?", (entry["id"],)
+    )
+    monitor = make_monitor(db, settings, broker, NOW_MS)
+    await monitor._reconcile_fills()
+    row = db.execute(
+        "SELECT status, filled_fraction FROM trade_plans WHERE id = ?", (plan_id,)
+    )[0]
+    assert row["filled_fraction"] > 0
+    assert row["status"] == "active"
+
+
+async def test_maintain_tp_skips_rejected_leg_with_unchanged_qty(
+    db, settings, broker, trader
+):
+    """finding #9/#18: TP 레그의 최근 시도가 같은 수량으로 거부됐으면(서브계약
+    floor→0 등) 매 사이클 재발주하지 않는다 — 무한 rejected 루프 차단."""
+    plan = fixed_long_plan(None, {}, "long_alt", SYMBOL)
+    db.execute(
+        "INSERT INTO trade_plans (symbol, side, plan_json, status, filled_fraction) "
+        "VALUES (?, 'long', ?, 'active', 1.0)", (SYMBOL, plan.to_json()),
+    )
+    plan_id = 1
+    filled_qty = 10.0
+    desired0 = filled_qty * plan.tps[0].fraction  # 비-최종 레그 목표 수량
+    # 레그 0의 최근 시도가 desired0 수량으로 이미 거부된 상태를 심는다.
+    db.execute(
+        "INSERT INTO paper_orders (symbol, side, qty, limit_price, reduce_only, "
+        "status, plan_id, leg_kind, leg_index, client_order_id, reason) "
+        "VALUES (?, 'sell', ?, ?, 1, 'rejected', ?, 'tp', 0, '1-tp-0-0', "
+        "'수량 < 1계약')", (SYMBOL, desired0, plan.tps[0].price, plan_id),
+    )
+    orders = db.execute(
+        "SELECT * FROM paper_orders WHERE plan_id = ? ORDER BY id", (plan_id,)
+    )
+    await trader._maintain_tp_orders(db, broker, plan_id, plan, filled_qty, orders)
+    leg0 = db.execute(
+        "SELECT status FROM paper_orders WHERE client_order_id LIKE '1-tp-0-%'"
+    )
+    # 레그 0은 재발주되지 않았다 — 여전히 거부 행 하나뿐.
+    assert [r["status"] for r in leg0] == ["rejected"]

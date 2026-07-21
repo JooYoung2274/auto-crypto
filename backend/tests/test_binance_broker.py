@@ -60,6 +60,7 @@ class MockBinanceApi:
         self.order_5xx_remaining = 0  # POST → HTTP 500 (모호한 실패)
         self.order_1021_remaining = 0  # POST → -1021 (recvWindow 밖) 후 재시도
         self.order_query_absent = False  # GET /fapi/v1/order → 404 (미접수)
+        self.order_query_5xx = False  # GET /fapi/v1/order → 500 (조회 실패)
         self.cancels: list[dict] = []
         self.leverage_calls: list[dict] = []
         self.margin_type_calls: list[dict] = []
@@ -176,6 +177,8 @@ class MockBinanceApi:
 
         if path == "/fapi/v1/order" and request.method == "GET":
             params = self._verify_signed(request)
+            if self.order_query_5xx:
+                return httpx.Response(500, json={"code": -1000, "msg": "server error"})
             if self.order_query_absent:
                 return httpx.Response(404, json={"code": -2013, "msg": "Order does not exist"})
             filled = self.query_status == "FILLED"
@@ -492,8 +495,8 @@ async def test_stop_exit_chase_cancel_replace_then_ioc_fallback(broker, api):
     assert [p["timeInForce"] for p in api.order_posts] == ["GTX", "GTX", "IOC"]
     assert all(p["reduceOnly"] == "true" for p in api.order_posts)
     assert len(api.cancels) == 2
-    assert api.order_posts[0]["newClientOrderId"] == "7-stop-exit-0"
-    assert api.order_posts[2]["newClientOrderId"] == "7-stop-exit-ioc"
+    assert api.order_posts[0]["newClientOrderId"] == "7-stop-exit-0-0"
+    assert api.order_posts[2]["newClientOrderId"] == "7-stop-exit-0-2"
     assert order.status == "filled"  # IOC는 체결
 
 
@@ -688,3 +691,96 @@ async def test_live_kill_switch_and_counter_persist_across_restart(api, live_db)
         assert "킬스위치" in rejected.reason
     finally:
         await broker2.aclose()
+
+
+# -- GTX 크로싱 미러 + pending-unknown + IOC 폴백 실패 (finding #6/#7/#16) ----------------
+
+
+async def test_gtx_immediate_expiry_mirrors_rejected(api, live_db):
+    """finding #6: GTX(post-only) 진입 레그가 배치 즉시 크로싱으로 EXPIRED되면
+    'expired'가 아니라 'rejected'로 미러한다 — 모니터의 원가격 재큐 무한 루프를
+    끊는다 (rejected로 끝난 레그는 재큐하지 않음)."""
+    broker = make_db_broker(api, live_db)
+    try:
+        api.order_response_status = "EXPIRED"  # 크로스 → 즉시 소멸
+        order = await broker.place_order(entry_req())
+        assert order.status == "rejected"
+        assert "크로싱" in order.reason
+        row = live_db.execute(
+            "SELECT status FROM paper_orders WHERE client_order_id = '1-entry-0-0'"
+        )[0]
+        assert row["status"] == "rejected"
+    finally:
+        await broker.aclose()
+
+
+async def test_ambiguous_placement_query_failure_mirrors_pending_open(api, live_db):
+    """finding #7: 모호한 발주(5xx) + 채택 조회 자체가 실패하면 rejected가 아니라
+    pending-unknown(open)으로 미러하고, 이후 미접수가 확정되면 settle이
+    rejected로 해소한다."""
+    broker = make_db_broker(api, live_db)
+    try:
+        api.order_5xx_remaining = 5  # POST 계속 500
+        api.order_query_5xx = True  # 채택 조회도 500 (같은 네트워크 장애)
+        order = await broker.place_order(entry_req())
+        assert order.status == "open"
+        assert "발주 확인 불가" in order.reason
+        row = live_db.execute(
+            "SELECT status, reason FROM paper_orders "
+            "WHERE client_order_id = '1-entry-0-0'"
+        )[0]
+        assert row["status"] == "open" and "발주 확인 불가" in row["reason"]
+
+        api.order_5xx_remaining = 0
+        api.order_query_5xx = False
+        api.order_query_absent = True  # 조회 404 → 미접수 확정
+        changed = await asyncio.to_thread(broker.settle, None)
+        assert any(c.status == "rejected" for c in changed)
+        row = live_db.execute(
+            "SELECT status FROM paper_orders WHERE client_order_id = '1-entry-0-0'"
+        )[0]
+        assert row["status"] == "rejected"
+    finally:
+        await broker.aclose()
+
+
+async def test_stop_exit_chase_ioc_failure_mirrors_rejected(api, live_db):
+    """finding #16: IOC 폴백 POST가 실패하면 예외를 밖으로 던지지 않고 rejected로
+    미러해 모니터의 가드가 볼 수 있게 한다."""
+    broker = make_db_broker(api, live_db)
+    try:
+        api.query_status = "NEW"  # 패시브 리밋 미체결 → cancel-replace 후 IOC
+        api.order_5xx_remaining = 9  # 모든 POST 500 → IOC 폴백도 실패
+        order = await broker.stop_exit_chase(
+            "BTCUSDT", "sell", 0.01, plan_id=1, attempts=1, wait_seconds=0.0
+        )
+        assert order.status == "rejected"
+        assert "IOC 폴백 실패" in order.reason
+    finally:
+        await broker.aclose()
+
+
+async def test_stop_exit_chase_uses_parseable_generation_coids(api, live_db):
+    """finding #11/#12: 라이브 체이스 coid는 정규형 {plan}-stop-exit-0-{n}이며
+    재호출마다 세대가 올라가 신선한 clOrdId를 쓴다."""
+    from app.agents.trader import parse_client_order_id
+
+    broker = make_db_broker(api, live_db)
+    try:
+        api.query_status = "NEW"
+        await broker.stop_exit_chase(
+            "BTCUSDT", "sell", 0.01, plan_id=1, attempts=2, wait_seconds=0.0
+        )
+        coids = [
+            r["client_order_id"]
+            for r in live_db.execute(
+                "SELECT client_order_id FROM paper_orders "
+                "WHERE client_order_id LIKE '%-stop-exit-%' ORDER BY id"
+            )
+        ]
+        assert coids == ["1-stop-exit-0-0", "1-stop-exit-0-1", "1-stop-exit-0-2"]
+        for c in coids:
+            parsed = parse_client_order_id(c)
+            assert parsed is not None and parsed[0] == 1 and parsed[1] == "stop-exit"
+    finally:
+        await broker.aclose()

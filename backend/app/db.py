@@ -266,8 +266,13 @@ class Database:
         """activity_log 보존 정책 (spec §6): ``days``일 초과 행 삭제 +
         최신 ``max_rows``행만 유지. 삭제된 행 수를 반환한다."""
         with self._lock:
+            # ts는 events.py가 'T' 구분자(+00:00)로 쓰고 threshold는 SQLite
+            # 공백 구분자라 바이트 비교가 어긋난다 ('T'=0x54 > ' '=0x20) —
+            # 두 쪽 다 'YYYY-MM-DD HH:MM:SS'로 정규화해 경계일 행이 하루 더
+            # 남는 것을 막는다 (finding #15).
             cur = self._conn.execute(
-                "DELETE FROM activity_log WHERE ts < datetime('now', ?)",
+                "DELETE FROM activity_log "
+                "WHERE substr(replace(ts, 'T', ' '), 1, 19) < datetime('now', ?)",
                 (f"-{int(days)} days",),
             )
             deleted = cur.rowcount

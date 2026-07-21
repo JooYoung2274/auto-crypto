@@ -139,7 +139,9 @@ class Trader(AgentBase):
         ``filled_fraction`` from filled entry legs, promote approved → active,
         and (re)size the reduce-only TP ladder to the actually filled qty
         (TP 수량은 매 체결 이벤트마다 실제 체결 수량 기준 재계산, 스펙 §2)."""
-        positions = {p.symbol: p for p in await broker.get_positions()}
+        # (심볼, 방향)으로 키잉 — 헤지 모드 반대 방향(수동) 포지션에 TP를
+        # 물리지 않게 (finding #5).
+        positions = {(p.symbol, p.side): p for p in await broker.get_positions()}
         for row in open_plans(db):
             plan_id = int(row["id"])
             plan = TradePlan.from_json(row["plan_json"])
@@ -178,7 +180,7 @@ class Trader(AgentBase):
                     symbol=plan.symbol,
                     filled_fraction=filled_fraction,
                 )
-            if filled_qty > 0 and plan.symbol in positions:
+            if filled_qty > 0 and (plan.symbol, plan.side) in positions:
                 await self._maintain_tp_orders(
                     db, broker, plan_id, plan, filled_qty, orders
                 )
@@ -227,6 +229,17 @@ class Trader(AgentBase):
             if any(o["status"] == "filled" for o in leg_orders):
                 continue  # 이 레그는 이미 익절 완료
             if desired <= _QTY_TOL:
+                continue
+            last = leg_orders[-1] if leg_orders else None
+            if (
+                last is not None
+                and open_order is None
+                and last["status"] == "rejected"
+                and abs(float(last["qty"]) - desired) <= max(_QTY_TOL, desired * 1e-6)
+            ):
+                # 최근 시도가 같은 수량으로 거부됐다 (예: OKX 서브계약 floor→0,
+                # Binance stepSize 미만) → 매 사이클 재발주하는 무한 루프를 막고
+                # 수량이 바뀔 때(추가 체결)까지 건너뛴다 (finding #9/#18).
                 continue
             if open_order is not None:
                 if abs(float(open_order["qty"]) - desired) <= max(
@@ -277,7 +290,9 @@ class Trader(AgentBase):
         place the passive limit entry ladder. Returns the placed orders."""
         await self.set_state("working", f"챔피언 {spec.id_key()} 플랜 산출")
         now = _now_ms(broker, now_ms)
-        positions = {p.symbol: p for p in await broker.get_positions()}
+        # (심볼, 방향)으로 키잉 — 헤지 모드에서 반대 방향(수동) 포지션이 봇의
+        # 정방향 진입을 영구 차단하지 않게 (finding #5).
+        positions = {(p.symbol, p.side): p for p in await broker.get_positions()}
         balance = await broker.get_balance()
         wallet = float(balance.wallet_balance)
         seed = settings.initial_seed_usdt
@@ -295,13 +310,13 @@ class Trader(AgentBase):
                     f"{symbol} 오픈 플랜 유지 — 중복 진입 방지", symbol=symbol
                 )
                 continue
-            if symbol in positions:
-                continue  # 포지션 보유 중 — 플랜 종료 전 신규 진입 없음
             plan = await asyncio.to_thread(
                 self._build_plan, spec, frames, regime, symbol
             )
             if plan is None:
                 continue
+            if (symbol, plan.side) in positions:
+                continue  # 같은 방향 포지션 보유 중 — 플랜 종료 전 신규 진입 없음
             plan = dataclasses.replace(plan, margin_usdt=margin_budget)
             try:
                 quote = await broker.get_quote(symbol)

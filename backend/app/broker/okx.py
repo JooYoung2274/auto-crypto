@@ -48,6 +48,10 @@ MAX_RETRIES = 2
 #: 스탑엑싯 체이스 기본 cancel-replace 횟수 (그 후 reduce-only IOC 폴백).
 STOP_CHASE_ATTEMPTS = 3
 
+#: 모호한 발주(타임아웃/5xx) + 채택 조회 실패 시 미러 사유 마커 — settle이
+#: clOrdId로 최종 해소한다 (finding #7). 절대 rejected로 단정하지 않는다.
+_PENDING_UNKNOWN = "발주 확인 불가"
+
 #: paper_state 지속 키 (재기동 복원, 스펙 §5) — Binance와 공유 (동시 활성 브로커 1개).
 _KILL_KEY = "live_kill_switch"
 _ORDER_TIMES_KEY = "live_order_times_json"
@@ -618,17 +622,38 @@ class OKXBroker(Broker):
         self._record_order_time()
         return self._mirror(self._order_from_payload(row, request, inst_id), request)
 
+    def _pending_unknown(self, request: OrderRequest, reason: str) -> Order:
+        """발주 결과 미상 — 'open'으로 미러해 settle이 clOrdId로 해소하게 한다
+        (finding #7). 거래소에 주문이 남아 있을 수 있어 rejected로 단정 금지."""
+        return Order(
+            id=f"pending-{uuid.uuid4().hex[:8]}",
+            symbol=request.symbol,
+            side=request.side,
+            qty=request.qty,
+            limit_price=request.limit_price,
+            status="open",
+            reduce_only=request.reduce_only,
+            aggressive=request.aggressive,
+            plan_id=request.plan_id,
+            client_order_id=request.client_order_id,
+            reason=f"{_PENDING_UNKNOWN} — {reason} (정산에서 clOrdId로 해소)",
+        )
+
     async def _adopt_or_reject(self, request: OrderRequest, reason: str) -> Order:
         """모호한 타임아웃/5xx 뒤: clOrdId로 조회해 실제로 접수됐으면 채택
-        (중복 재제출 방지, 스펙 §2), 아니면 거부."""
+        (중복 재제출 방지, 스펙 §2). 조회가 명확히 '미접수'(None)면 거부하되,
+        조회 자체가 실패하면(같은 네트워크 장애) 주문이 남아 있을 수 있으므로
+        pending-unknown(open)으로 미러 — settle이 해소한다 (finding #7)."""
         if request.client_order_id:
-            with contextlib.suppress(httpx.HTTPError, OKXError):
+            try:
                 live = await self.query_order(
                     request.symbol, request.client_order_id
                 )
-                if live is not None:
-                    self._record_order_time()
-                    return live
+            except (httpx.HTTPError, OKXError):
+                return self._pending_unknown(request, reason)
+            if live is not None:
+                self._record_order_time()
+                return live
         return self._rejected(request, reason)
 
     async def query_order(
@@ -790,7 +815,31 @@ class OKXBroker(Broker):
                     live = await self.query_order(r["symbol"], coid, client=client)
                 except (httpx.HTTPError, OKXError):
                     continue
-                if live is None or live.status == r["status"]:
+                if live is None:
+                    # pending-unknown 행인데 거래소가 '없음'으로 답하면 미접수
+                    # 확정 → rejected (finding #7). 일반 오픈 행은 그대로 둔다.
+                    if _PENDING_UNKNOWN in (r["reason"] or ""):
+                        self.db.execute(
+                            "UPDATE paper_orders SET status = 'rejected', "
+                            "reason = ? WHERE id = ?",
+                            (f"{_PENDING_UNKNOWN} — 거래소 미접수 확정", r["id"]),
+                        )
+                        got = self.db.execute(
+                            "SELECT * FROM paper_orders WHERE id = ?", (r["id"],)
+                        )[0]
+                        changed.append(self._mirror_row_to_order(got))
+                    continue
+                if live.status == r["status"]:
+                    # 상태 불변이라도 부분 체결량이 늘었으면 미러에 반영한다
+                    # (finding #10): 라이브 partially_filled는 'open'으로 남아
+                    # filled_qty가 0으로 고이면 실제 포지션을 든 플랜을 TTL이
+                    # abandon할 수 있다.
+                    if live.filled_qty > float(r["filled_qty"] or 0.0):
+                        self.db.execute(
+                            "UPDATE paper_orders SET filled_qty = ?, "
+                            "avg_fill_price = ? WHERE id = ?",
+                            (live.filled_qty, live.avg_fill_price, r["id"]),
+                        )
                     continue
                 self.db.execute(
                     "UPDATE paper_orders SET status = ?, filled_qty = ?, "
@@ -848,6 +897,18 @@ class OKXBroker(Broker):
         }
 
     # -- stop-exit chase (스펙 §5) --------------------------------------------------------
+    def _stop_exit_base(self, plan_id: int | None) -> int:
+        """이 플랜의 기존 스탑엑싯 미러 행 수 = 다음 체이스 세대(generation).
+        재호출마다 여기서 시작해 신선한 clOrdId를 쓴다 (finding #11/#16)."""
+        if self.db is None or plan_id is None:
+            return 0
+        rows = self.db.execute(
+            "SELECT COUNT(*) AS n FROM paper_orders WHERE plan_id = ? "
+            "AND client_order_id LIKE '%-stop-exit-%'",
+            (plan_id,),
+        )
+        return int(rows[0]["n"])
+
     async def stop_exit_chase(
         self,
         symbol: str,
@@ -857,15 +918,32 @@ class OKXBroker(Broker):
         plan_id: int | None = None,
         attempts: int = STOP_CHASE_ATTEMPTS,
         wait_seconds: float = 60.0,
+        start_attempt: int | None = None,
     ) -> Order:
         """손절/청산회피 exit: reduce-only post_only 리밋 체이스 K회 → reduce-only
-        IOC 크로싱 리밋 폴백 (한정 taker). 체결 성공/최종 폴백 주문을 반환."""
-        prefix = f"{plan_id}-stop-exit" if plan_id is not None else (
-            f"chase-{uuid.uuid4().hex[:8]}"
-        )
-        for attempt in range(attempts):
+        IOC 크로싱 리밋 폴백 (한정 taker). 체결 성공/최종 폴백 주문을 반환.
+
+        coid는 파싱 가능한 정규형 ``{plan_id}-stop-exit-0-{attempt}``이며 attempt는
+        기존 스탑엑싯 행 수(세대)에서 시작한다 — 재호출 시 clOrdId 재사용/무한
+        루프/중복 POST를 원천 차단한다 (finding #11/#12/#16)."""
+        if plan_id is not None:
+            base = (
+                start_attempt
+                if start_attempt is not None
+                else self._stop_exit_base(plan_id)
+            )
+
+            def _coid(i: int) -> str:
+                return f"{plan_id}-stop-exit-0-{base + i}"
+        else:
+            tag = uuid.uuid4().hex[:8]
+
+            def _coid(i: int) -> str:
+                return f"chase-{tag}-{i}"
+
+        for i in range(attempts):
             quote = await self.get_quote(symbol)
-            coid = f"{prefix}-{attempt}"
+            coid = _coid(i)
             order = await self.place_order(
                 OrderRequest(
                     symbol=symbol,
@@ -879,8 +957,9 @@ class OKXBroker(Broker):
             )
             if order.status == "filled":
                 return order
-            # post_only가 크로스로 즉시 거부/소멸하면 대기 없이 다음 시도/폴백으로.
-            if order.status in ("rejected", "expired"):
+            # 즉시 종결 — 거부/소멸, 또는 stale 멱등 반환('cancelled') — 이면
+            # 60초 대기를 태우지 않고 곧장 다음 시도/폴백으로 (finding #16).
+            if order.status in ("rejected", "expired", "cancelled"):
                 continue
             await asyncio.sleep(wait_seconds)
             current = await self.query_order(symbol, coid)
@@ -888,11 +967,12 @@ class OKXBroker(Broker):
                 return current
             with contextlib.suppress(httpx.HTTPError, OKXError, ValueError):
                 await self.cancel_order(coid, symbol)
-        # 폴백: reduce-only IOC 크로싱 리밋.
+        # 폴백: reduce-only IOC 크로싱 리밋 (신선한 coid). 실패/거부는 rejected로
+        # 미러해 모니터의 가드가 볼 수 있게 하고, OKXError를 밖으로 던지지 않는다.
         quote = await self.get_quote(symbol)
         inst_id = to_okx_symbol(symbol)
         sz = self._to_contracts(inst_id, qty)
-        ioc_coid = f"{prefix}-ioc"
+        ioc_coid = _coid(attempts)
         req = OrderRequest(
             symbol=symbol,
             side=side,  # type: ignore[arg-type]
@@ -903,6 +983,10 @@ class OKXBroker(Broker):
             plan_id=plan_id,
             client_order_id=ioc_coid,
         )
+        if sz <= 0:
+            return self._mirror(
+                self._rejected(req, f"수량 {qty} < 1계약 — IOC 폴백 불가"), req
+            )
         body: dict[str, Any] = {
             "instId": inst_id,
             "tdMode": "isolated",
@@ -914,8 +998,19 @@ class OKXBroker(Broker):
             "reduceOnly": True,
             "clOrdId": _okx_clordid(ioc_coid),
         }
-        data = await self._signed("POST", "/api/v5/trade/order", body=body)
+        try:
+            data = await self._signed("POST", "/api/v5/trade/order", body=body)
+        except (OKXError, httpx.HTTPError) as exc:
+            return self._mirror(self._rejected(req, f"IOC 폴백 실패: {exc}"), req)
         row = data[0] if data else {}
+        s_code = str(row.get("sCode", "0"))
+        if s_code not in ("0", ""):
+            return self._mirror(
+                self._rejected(
+                    req, f"IOC 거부: OKX sCode {s_code} {row.get('sMsg', '')}"
+                ),
+                req,
+            )
         self._record_order_time()
         return self._mirror(self._order_from_payload(row, req, inst_id), req)
 
