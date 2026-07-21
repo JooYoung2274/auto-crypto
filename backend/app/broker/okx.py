@@ -59,6 +59,9 @@ OKX_CT_VAL: dict[str, float] = {
     "SOL-USDT-SWAP": 1.0,
     "XRP-USDT-SWAP": 100.0,
     "DOGE-USDT-SWAP": 1000.0,
+    # 2026-07-20 사용자 요청 추가 (OKX instruments 실측값)
+    "ADA-USDT-SWAP": 100.0,
+    "LTC-USDT-SWAP": 1.0,
 }
 
 #: OKX 주문 상태 → ABC OrderStatus.

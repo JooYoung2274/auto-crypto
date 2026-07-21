@@ -106,6 +106,9 @@ SYMBOL_FILTERS: dict[str, SymbolFilter] = {
     "SOLUSDT": SymbolFilter(tick_size=0.01, step_size=1.0, min_notional=5.0),
     "XRPUSDT": SymbolFilter(tick_size=0.0001, step_size=0.1, min_notional=5.0),
     "DOGEUSDT": SymbolFilter(tick_size=0.00001, step_size=1.0, min_notional=5.0),
+    # 2026-07-20 사용자 요청 추가 (Binance exchangeInfo 실측값)
+    "ADAUSDT": SymbolFilter(tick_size=0.0001, step_size=1.0, min_notional=5.0),
+    "LTCUSDT": SymbolFilter(tick_size=0.01, step_size=0.001, min_notional=20.0),
 }
 
 #: 플랜 게이트를 통과하는 trade_plans.status 값.

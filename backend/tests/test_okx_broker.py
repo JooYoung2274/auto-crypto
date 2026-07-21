@@ -357,6 +357,8 @@ def test_timeframe_mapping():
         ("SOL-USDT-SWAP", 1.0),
         ("XRP-USDT-SWAP", 100.0),
         ("DOGE-USDT-SWAP", 1000.0),
+        ("ADA-USDT-SWAP", 100.0),
+        ("LTC-USDT-SWAP", 1.0),
     ],
 )
 def test_contract_conversion_both_directions(inst_id, ct):
