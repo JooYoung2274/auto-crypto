@@ -486,6 +486,17 @@ class PositionMonitor:
             pos = positions.get(row["symbol"])
             if pos is None or pos.qty <= 1e-12:
                 continue
+            # 포지션 소유권 가드: 이 심볼에 더 새로운 플랜(오픈 또는 그쪽의
+            # stopped)이 있으면 지금 포지션은 그 플랜 소유다 — 과거 stopped
+            # 플랜의 '복구'가 새 포지션을 청산해선 안 된다 (2026-07-21 실계정
+            # 무한 재발주 사고 회귀 방지).
+            newer = self.db.execute(
+                "SELECT id FROM trade_plans WHERE symbol = ? AND id > ? "
+                "AND status IN ('approved', 'active', 'stopped') LIMIT 1",
+                (row["symbol"], plan_id),
+            )
+            if newer:
+                continue
             if self.db.execute(
                 "SELECT id FROM paper_orders WHERE plan_id = ? "
                 "AND status = 'open' AND client_order_id LIKE '%-stop-exit-%'",
