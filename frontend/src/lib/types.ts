@@ -464,3 +464,24 @@ export interface PlanOrderInfo {
 export interface OpenPlanInfo extends PlanInfo {
   orders: PlanOrderInfo[]
 }
+
+/** GET /api/trade-history — 종결 플랜의 실현 손익 롤업 (손절/익절/강제 청산). */
+export interface TradeHistoryRow {
+  plan_id: number
+  symbol: string
+  side: PositionSide
+  leverage: number
+  entry_ts: string
+  exit_ts: string
+  avg_entry: number
+  avg_exit: number
+  qty: number
+  /** 펀딩 포함 실현 손익 (USDT). */
+  pnl_usdt: number
+  /** 펀딩 지불액 (+ = 비용). */
+  funding_paid: number
+  /** 마진 대비 수익률. */
+  ret_on_margin: number
+  /** 손절 | 익절 | 강제 청산 */
+  exit_reason: string
+}

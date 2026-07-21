@@ -1,8 +1,15 @@
 import { useEffect, useState } from "react"
 import { api } from "../lib/api"
-import type { EquityPoint, PortfolioResponse, PortfolioSnapshot } from "../lib/types"
+import type { EquityPoint, PortfolioResponse, PortfolioSnapshot, TradeHistoryRow } from "../lib/types"
 import { fmtSignedUsdt, fmtUsdt, liqDistancePct, pnlClass, sideClass, sideLabel } from "../lib/format"
-import { EquityChart } from "./EquityChart"
+import { EquityChart, shortDate } from "./EquityChart"
+
+/** 종결 사유 → 뱃지 클래스 (익절 = 수익색, 손절/강제 청산 = 손실색). */
+export function exitReasonClass(reason: string): string {
+  if (reason === "익절") return "badge-long"
+  if (reason === "강제 청산") return "badge-liq"
+  return "badge-short"
+}
 
 /** Map backend snapshot rows ({ts, wallet_balance, …, total_value}) to chart points. */
 export function snapshotsToChartData(snapshots: PortfolioSnapshot[]): EquityPoint[] {
@@ -20,6 +27,7 @@ interface Props {
 /** 선물 포트폴리오: 지갑 타일(총 자산/사용 가능/포지션 마진/미실현 손익) + 포지션 테이블. */
 export function PortfolioPanel({ version = 0 }: Props) {
   const [pf, setPf] = useState<PortfolioResponse | null>(null)
+  const [history, setHistory] = useState<TradeHistoryRow[]>([])
   const [error, setError] = useState<string | null>(null)
 
   useEffect(() => {
@@ -31,6 +39,14 @@ export function PortfolioPanel({ version = 0 }: Props) {
       })
       .catch(() => {
         if (alive) setError("포트폴리오를 불러오지 못했습니다 (백엔드 연결 확인)")
+      })
+    api
+      .tradeHistory()
+      .then((rows) => {
+        if (alive) setHistory(rows)
+      })
+      .catch(() => {
+        // 내역 로드 실패는 패널 전체를 막지 않는다 — 빈 목록 유지.
       })
     return () => {
       alive = false
@@ -140,6 +156,56 @@ export function PortfolioPanel({ version = 0 }: Props) {
                 </tr>
               )
             })}
+          </tbody>
+        </table>
+      </div>
+      <h3 className="section-title">거래 내역 (손절·익절)</h3>
+      <div className="table-scroll">
+        <table className="data-table">
+          <thead>
+            <tr>
+              <th>종목</th>
+              <th>결과</th>
+              <th className="num">수량</th>
+              <th className="num">평균 진입</th>
+              <th className="num">평균 청산</th>
+              <th className="num">실현 손익</th>
+              <th className="num">수익률(마진)</th>
+              <th className="num">펀딩</th>
+              <th>진입 시각</th>
+              <th>청산 시각</th>
+            </tr>
+          </thead>
+          <tbody>
+            {history.length === 0 && (
+              <tr>
+                <td colSpan={10} className="panel-empty">
+                  아직 종결된 거래가 없습니다
+                </td>
+              </tr>
+            )}
+            {history.map((t) => (
+              <tr key={t.plan_id}>
+                <td>
+                  <span className="strategy-name">{t.symbol}</span>
+                  <span className={`badge ${sideClass(t.side)}`}>{sideLabel(t.side)}</span>
+                  <span className="badge badge-lev">{t.leverage}x</span>
+                </td>
+                <td>
+                  <span className={`badge ${exitReasonClass(t.exit_reason)}`}>{t.exit_reason}</span>
+                </td>
+                <td className="num">{t.qty.toLocaleString("ko-KR", { maximumFractionDigits: 6 })}</td>
+                <td className="num">{fmtPrice(t.avg_entry)}</td>
+                <td className="num">{fmtPrice(t.avg_exit)}</td>
+                <td className={`num ${pnlClass(t.pnl_usdt)}`}>{fmtSignedUsdt(t.pnl_usdt)}</td>
+                <td className={`num ${pnlClass(t.ret_on_margin)}`}>
+                  {(t.ret_on_margin * 100).toFixed(1)}%
+                </td>
+                <td className={`num ${pnlClass(-t.funding_paid)}`}>{fmtSignedUsdt(-t.funding_paid)}</td>
+                <td>{shortDate(t.entry_ts)}</td>
+                <td>{shortDate(t.exit_ts)}</td>
+              </tr>
+            ))}
           </tbody>
         </table>
       </div>

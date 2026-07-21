@@ -15,6 +15,7 @@ import type {
   ReportSummary,
   StatusResponse,
   StrategyDetail,
+  TradeHistoryRow,
   TradingMode,
   TradingModeResponse,
 } from "./types"
@@ -132,6 +133,10 @@ export const api = {
   /** 대기·진행 중 플랜 목록 + 분할 레그 주문 (대기 주문 탭). */
   openPlans(): Promise<OpenPlanInfo[]> {
     return request("/api/plans")
+  },
+  /** 종결 플랜 실현 손익 내역 — 손절/익절/강제 청산 라벨 포함. */
+  tradeHistory(): Promise<TradeHistoryRow[]> {
+    return request("/api/trade-history")
   },
   plan(id: number): Promise<PlanInfo> {
     return request(`/api/plans/${id}`)

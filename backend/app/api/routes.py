@@ -489,6 +489,96 @@ async def get_positions(request: Request) -> list[dict]:
     return [_position_info(pos, db, now_ms) for pos in positions]
 
 
+@router.get("/trade-history")
+async def get_trade_history(request: Request, limit: int = 50) -> list[dict]:
+    """종결된 플랜의 실현 손익 내역 (손절/익절/강제 청산 라벨 포함).
+
+    체결 기록(paper_orders 미러 — live도 동일 테이블)을 플랜 단위로 롤업한다.
+    강제 청산 행은 plan_id 없이 기록되므로 심볼+사유+시각 윈도로 귀속시킨다.
+    펀딩은 보유 구간의 정산분 합(양수 = 지불 비용)."""
+    db = request.app.state.db
+    rows: list[dict] = []
+    for plan_row in db.execute(
+        "SELECT * FROM trade_plans WHERE status IN ('closed', 'stopped') "
+        "AND filled_fraction > 0 ORDER BY id DESC LIMIT ?",
+        (int(limit),),
+    ):
+        plan_id = int(plan_row["id"])
+        payload = json.loads(plan_row["plan_json"] or "{}")
+        side = plan_row["side"]
+        sign = 1.0 if side == "long" else -1.0
+        fills = db.execute(
+            "SELECT * FROM paper_orders WHERE plan_id = ? AND status = 'filled' "
+            "ORDER BY id",
+            (plan_id,),
+        )
+        entries = [f for f in fills if not f["reduce_only"]]
+        exits = [f for f in fills if f["reduce_only"]]
+        liquidated = plan_row["reject_reason"] == "강제 청산"
+        if liquidated:
+            exits += db.execute(
+                "SELECT * FROM paper_orders WHERE symbol = ? AND status = 'filled' "
+                "AND plan_id IS NULL AND reason LIKE '%강제 청산%' "
+                "AND substr(replace(ts, 'T', ' '), 1, 19) >= "
+                "substr(replace(?, 'T', ' '), 1, 19) ORDER BY id",
+                (plan_row["symbol"], plan_row["created_at"]),
+            )
+        if not entries or not exits:
+            continue
+
+        def _avg(fs: list[dict]) -> tuple[float, float]:
+            qty = sum(float(f["filled_qty"] or f["qty"]) for f in fs)
+            px = sum(
+                float(f["avg_fill_price"] or f["limit_price"] or 0.0)
+                * float(f["filled_qty"] or f["qty"])
+                for f in fs
+            )
+            return (px / qty if qty > 0 else 0.0, qty)
+
+        avg_entry, entry_qty = _avg(entries)
+        avg_exit, exit_qty = _avg(exits)
+        matched = min(entry_qty, exit_qty)
+        pnl = sign * (avg_exit - avg_entry) * matched
+        leverage = int(payload.get("leverage") or 1)
+        margin = avg_entry * entry_qty / max(1, leverage)
+        first_entry = min(f["ts"] for f in entries)
+        last_exit = max(f["ts"] for f in exits)
+        funding = db.execute(
+            "SELECT COALESCE(SUM(payment), 0.0) AS t FROM funding_payments "
+            "WHERE symbol = ? "
+            "AND substr(replace(ts, 'T', ' '), 1, 19) >= "
+            "substr(replace(?, 'T', ' '), 1, 19) "
+            "AND substr(replace(ts, 'T', ' '), 1, 19) <= "
+            "substr(replace(?, 'T', ' '), 1, 19)",
+            (plan_row["symbol"], first_entry, last_exit),
+        )
+        funding_paid = -float(funding[0]["t"])  # + = 지불 비용
+        if liquidated:
+            exit_reason = "강제 청산"
+        elif plan_row["status"] == "stopped":
+            exit_reason = "손절"
+        else:
+            exit_reason = "익절"
+        rows.append(
+            {
+                "plan_id": plan_id,
+                "symbol": plan_row["symbol"],
+                "side": side,
+                "leverage": leverage,
+                "entry_ts": first_entry,
+                "exit_ts": last_exit,
+                "avg_entry": avg_entry,
+                "avg_exit": avg_exit,
+                "qty": matched,
+                "pnl_usdt": pnl - funding_paid,
+                "funding_paid": funding_paid,
+                "ret_on_margin": (pnl - funding_paid) / margin if margin > 0 else 0.0,
+                "exit_reason": exit_reason,
+            }
+        )
+    return rows
+
+
 @router.get("/portfolio")
 async def get_portfolio(request: Request) -> dict:
     """선물 지갑 요약 (총자산/사용가능/포지션마진/미실현/펀딩) + 포지션 +

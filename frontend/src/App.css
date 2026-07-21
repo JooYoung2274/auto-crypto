@@ -1094,3 +1094,17 @@ td.rank {
   opacity: 0.8;
   margin-bottom: 8px;
 }
+
+/* 거래 내역 섹션 (PortfolioPanel) */
+.section-title {
+  font-family: ui-monospace, monospace;
+  font-size: 12px;
+  font-weight: 700;
+  letter-spacing: 1px;
+  color: #8f8aa8;
+  margin: 18px 0 0;
+}
+.badge-liq {
+  background: #4a1d24;
+  color: #ff8fa3;
+}

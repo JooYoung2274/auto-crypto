@@ -607,3 +607,59 @@ def test_ws_snapshot_then_events(client):
         assert meeting_payload is not None
         assert set(meeting_payload) == {"type", "meeting_id", "agents", "topic"}
         assert meeting_payload["agents"] == ["pm", "strategist"]
+
+
+# -- trade history (손절/익절 실현 내역) --------------------------------------------
+def test_trade_history_rollup(client):
+    db = client.app.state.db
+    plan_json = json.dumps({"leverage": 5})
+    # 익절로 종결된 숏 플랜: 진입 2레그(avg 100), 익절 2레그(avg 94).
+    pid = db.execute(
+        "INSERT INTO trade_plans (symbol, side, plan_json, status, filled_fraction) "
+        "VALUES ('SOLUSDT', 'short', ?, 'closed', 1.0)",
+        (plan_json,),
+    )[0]["id"]
+    db.executemany(
+        "INSERT INTO paper_orders (ts, symbol, side, qty, limit_price, filled_qty, "
+        "avg_fill_price, reduce_only, status, plan_id) VALUES (?, 'SOLUSDT', ?, ?, ?, ?, ?, ?, 'filled', ?)",
+        [
+            ("2026-07-20T01:00:00+00:00", "sell", 6.0, 101.0, 6.0, 101.0, 0, pid),
+            ("2026-07-20T01:05:00+00:00", "sell", 6.0, 99.0, 6.0, 99.0, 0, pid),
+            ("2026-07-20T09:00:00+00:00", "buy", 6.0, 95.0, 6.0, 95.0, 1, pid),
+            ("2026-07-20T10:00:00+00:00", "buy", 6.0, 93.0, 6.0, 93.0, 1, pid),
+        ],
+    )
+    # 보유 구간 펀딩 수취 +1.2 (payment 현금흐름 +) — 비용 관점 -1.2.
+    db.execute(
+        "INSERT INTO funding_payments (ts, symbol, side, rate, payment) "
+        "VALUES ('2026-07-20T08:00:00+00:00', 'SOLUSDT', 'short', -0.0001, 1.2)"
+    )
+    rows = client.get("/api/trade-history").json()
+    assert len(rows) == 1
+    r = rows[0]
+    assert r["symbol"] == "SOLUSDT" and r["side"] == "short"
+    assert r["exit_reason"] == "익절"
+    assert r["avg_entry"] == pytest.approx(100.0)
+    assert r["avg_exit"] == pytest.approx(94.0)
+    # 숏: (100-94)×12 = +72, 펀딩 수취 +1.2 → 73.2
+    assert r["pnl_usdt"] == pytest.approx(73.2)
+    assert r["funding_paid"] == pytest.approx(-1.2)
+    assert r["ret_on_margin"] == pytest.approx(73.2 / (100.0 * 12 / 5))
+    # 손절(stopped) 라벨.
+    pid2 = db.execute(
+        "INSERT INTO trade_plans (symbol, side, plan_json, status, filled_fraction, reject_reason) "
+        "VALUES ('XRPUSDT', 'short', ?, 'stopped', 0.5, '')",
+        (plan_json,),
+    )[0]["id"]
+    db.executemany(
+        "INSERT INTO paper_orders (ts, symbol, side, qty, limit_price, filled_qty, "
+        "avg_fill_price, reduce_only, status, plan_id) VALUES (?, 'XRPUSDT', ?, ?, ?, ?, ?, ?, 'filled', ?)",
+        [
+            ("2026-07-20T02:00:00+00:00", "sell", 100.0, 1.10, 100.0, 1.10, 0, pid2),
+            ("2026-07-20T06:00:00+00:00", "buy", 100.0, 1.13, 100.0, 1.13, 1, pid2),
+        ],
+    )
+    rows = client.get("/api/trade-history").json()
+    stop_row = next(r for r in rows if r["symbol"] == "XRPUSDT")
+    assert stop_row["exit_reason"] == "손절"
+    assert stop_row["pnl_usdt"] == pytest.approx(-3.0)  # (1.10-1.13)×100
