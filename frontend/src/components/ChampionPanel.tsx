@@ -108,7 +108,7 @@ function CurrentChampion({ champ, onDrill }: { champ: ChampionDetail; onDrill: (
       <div className="champion-meta">
         {champ.crowned_at && <span>등극: {localStamp(champ.crowned_at)}</span>}
       </div>
-      <div className="champion-exec">💰 모의거래 실행 시 이 전략의 TradePlan으로 분할 진입합니다</div>
+      <div className="champion-exec">💰 매매 사이클 실행 시 이 전략의 TradePlan으로 분할 진입합니다</div>
       {champ.backtests.length > 0 && (
         <div className="table-scroll">
           <table className="data-table row-clickable">

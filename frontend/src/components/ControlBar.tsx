@@ -55,7 +55,7 @@ export function ControlBar({
   // Tolerate either a 0..1 fraction or a 0..100 percentage from the backend.
   const pct = rawPct === null ? null : Math.max(0, Math.min(100, rawPct <= 1 ? rawPct * 100 : rawPct))
   const step = (active && progress && progress.cycle_id === cycle.id ? progress.step : cycle?.step) || "진행 중"
-  const kindLabel = cycleKindLabel(cycle?.kind)
+  const kindLabel = cycleKindLabel(cycle?.kind, mode)
   const regimeText = regimeLabel(regime)
 
   const [modalOpen, setModalOpen] = useState(false)
@@ -121,7 +121,7 @@ export function ControlBar({
               onClick={() => onStart(b.kind)}
               disabled={busy}
             >
-              {b.label}
+              {b.kind === "trade" && mode === "live" ? "💰 실거래 실행" : b.label}
             </button>
           ))
         ))}

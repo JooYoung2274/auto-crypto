@@ -25,3 +25,16 @@ describe("reportKindLabel", () => {
     expect(reportKindLabel(null)).toBe("연구")
   })
 })
+
+describe("cycleKindLabel — 모드 인지형 trade 라벨", () => {
+  it("live 모드에서는 trade가 실거래로 표시된다", () => {
+    expect(cycleKindLabel("trade", "live")).toBe("실거래")
+  })
+  it("paper/미지정 모드에서는 기존 모의거래 유지", () => {
+    expect(cycleKindLabel("trade", "paper")).toBe("모의거래")
+    expect(cycleKindLabel("trade")).toBe("모의거래")
+  })
+  it("trade 외 kind는 모드와 무관", () => {
+    expect(cycleKindLabel("research", "live")).toBe("전략 연구")
+  })
+})

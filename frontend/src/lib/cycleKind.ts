@@ -10,8 +10,13 @@ const CYCLE_KIND_LABELS: Record<CycleKind, string> = {
   trade: "모의거래",
 }
 
-/** Label for a cycle kind; unknown/missing kinds fall back to 전략 연구 (research). */
-export function cycleKindLabel(kind: CycleKind | null | undefined): string {
+/** Label for a cycle kind; unknown/missing kinds fall back to 전략 연구 (research).
+ *  trade는 모드 인지형 — live 모드에서는 "실거래"로 표시한다. */
+export function cycleKindLabel(
+  kind: CycleKind | null | undefined,
+  mode?: string | null,
+): string {
+  if (kind === "trade" && mode === "live") return "실거래"
   return (kind && CYCLE_KIND_LABELS[kind]) || CYCLE_KIND_LABELS.research
 }
 
