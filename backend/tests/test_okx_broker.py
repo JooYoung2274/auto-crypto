@@ -107,6 +107,8 @@ class MockOKXApi:
         self.order_429_remaining = 0
         self.cancels: list[dict] = []
         self.leverage_calls: list[dict] = []
+        # 계정 포지션 모드 — 'net_mode'(단방향, posSide 불필요) 기본.
+        self.pos_mode = "net_mode"
         # 서명/헤더 감사 기록.
         self.sign_checks: list[bool] = []
         self.api_keys_seen: list[str] = []
@@ -236,6 +238,10 @@ class MockOKXApi:
         if path == "/api/v5/trade/orders-pending" and method == "GET":
             self._verify_signed(request)
             return self._ok([])
+
+        if path == "/api/v5/account/config" and method == "GET":
+            self._verify_signed(request)
+            return self._ok([{"posMode": self.pos_mode, "acctLv": "2"}])
 
         if path == "/api/v5/account/set-leverage" and method == "POST":
             self._verify_signed(request)
@@ -529,6 +535,22 @@ async def test_set_leverage_hits_isolated_endpoint(broker, api):
     assert call["instId"] == "BTC-USDT-SWAP"
     assert call["lever"] == "7"
     assert call["mgnMode"] == "isolated"
+    assert "posSide" not in call  # net_mode(단방향)에서는 posSide 없이 1회
+
+
+async def test_set_leverage_long_short_mode_sets_both_sides(broker, api):
+    # 양방향(long_short_mode) 계정: 격리 레버리지는 posSide 필수 — 방향별 2회
+    # (실계정 400 재현 회귀, 2026-07-20).
+    api.pos_mode = "long_short_mode"
+    await broker.set_leverage("BTCUSDT", 7)
+    calls = api.leverage_calls[-2:]
+    assert {c["posSide"] for c in calls} == {"long", "short"}
+    assert all(
+        c["instId"] == "BTC-USDT-SWAP"
+        and c["lever"] == "7"
+        and c["mgnMode"] == "isolated"
+        for c in calls
+    )
 
 
 async def test_set_margin_mode_isolated_is_noop_and_cross_rejected(broker, api):

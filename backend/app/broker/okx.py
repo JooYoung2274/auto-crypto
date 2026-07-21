@@ -172,6 +172,7 @@ class OKXBroker(Broker):
         self._retry_base_delay = retry_base_delay
         #: rolling-24h 주문 타임스탬프 (epoch s).
         self._order_times: deque[float] = deque()
+        self._pos_mode: str | None = None  # 계정 포지션 모드 캐시 (reconcile 시 조회)
         #: 일손실 서킷브레이커 — True면 reduce-only 주문만 허용.
         self.kill_switch: bool = False
         self._order_symbols: dict[str, str] = {}  # order id → symbol (cancel용)
@@ -731,16 +732,32 @@ class OKXBroker(Broker):
             orders.append(self._order_from_payload(o, req, inst_id))
         return orders
 
+    async def _position_mode(self) -> str:
+        """계정 포지션 모드 조회 (캐시) — 'long_short_mode' | 'net_mode'.
+
+        격리마진 set-leverage는 양방향(long_short_mode) 계정에서 posSide가
+        필수라(없으면 400) 모드에 따라 호출 형태가 달라진다."""
+        if self._pos_mode is None:
+            cfg = await self._signed("GET", "/api/v5/account/config")
+            self._pos_mode = str((cfg[0] if cfg else {}).get("posMode", "net_mode"))
+        return self._pos_mode
+
     async def set_leverage(self, symbol: str, leverage: int) -> None:
-        await self._signed(
-            "POST",
-            "/api/v5/account/set-leverage",
-            body={
-                "instId": to_okx_symbol(symbol),
-                "lever": str(int(leverage)),
-                "mgnMode": "isolated",
-            },
-        )
+        base = {
+            "instId": to_okx_symbol(symbol),
+            "lever": str(int(leverage)),
+            "mgnMode": "isolated",
+        }
+        if await self._position_mode() == "long_short_mode":
+            # 양방향 모드: 방향별로 각각 설정해야 한다.
+            for pos_side in ("long", "short"):
+                await self._signed(
+                    "POST",
+                    "/api/v5/account/set-leverage",
+                    body={**base, "posSide": pos_side},
+                )
+        else:
+            await self._signed("POST", "/api/v5/account/set-leverage", body=base)
 
     async def set_margin_mode(self, symbol: str, mode: str = "isolated") -> None:
         # OKX는 격리마진을 주문 tdMode/레버리지 mgnMode로 지정한다 — 심볼별 별도
