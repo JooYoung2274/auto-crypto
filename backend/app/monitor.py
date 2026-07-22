@@ -118,6 +118,7 @@ class PositionMonitor:
         await self._publish_funding_events()
         await self._reconcile_fills()
         await self._requeue_expired(broker, now)
+        await self._abandon_dead_ladders(broker)
         await self._enforce_plan_ttl(broker, now)
         await self._judge_4h_stops(broker, now)
         await self._drive_stop_exits(broker, now)
@@ -332,6 +333,63 @@ class PositionMonitor:
                         data={"plan_id": plan_id, "leg_index": leg_index},
                     )
                 )
+
+    async def _abandon_dead_ladders(self, broker: Broker) -> None:
+        """래더 소멸 즉시 정리 — 진입 레그가 전부 죽었는데(취소/거부) 체결 0,
+        포지션 없음이면 플랜을 abandoned로 전환한다.
+
+        exchange가 post-only 크로싱 진입 주문을 취소하면(예: 진입가·손절선
+        근접 플랜) 레그가 cancelled로 끝나는데, requeue는 expired만 재큐하고
+        plan_ttl은 24h를 기다린다 — 그 사이 플랜이 'approved'로 고착돼 해당
+        심볼 신규 진입이 막힌다 (XRP #49, 2026-07-22). 재큐 대상(expired)이나
+        오픈 레그가 하나도 없고 래더가 전량 배치 완료된 경우에만 정리한다."""
+        held = {(p.symbol, p.side) for p in await broker.get_positions()}
+        for row in open_plans(self.db):
+            if float(row["filled_fraction"] or 0.0) > 0:
+                continue
+            if (row["symbol"], row["side"]) in held:
+                continue
+            plan_id = int(row["id"])
+            plan = TradePlan.from_json(row["plan_json"])
+            by_leg: dict[int, list[dict]] = {}
+            for o in self.db.execute(
+                "SELECT status, client_order_id FROM paper_orders WHERE plan_id = ? "
+                "ORDER BY id",
+                (plan_id,),
+            ):
+                leg = parse_client_order_id(o["client_order_id"])
+                if leg is not None and leg[1] == "entry":
+                    by_leg.setdefault(leg[2], []).append(o)
+            # 래더가 전량 배치됐고(모든 진입 레그 존재), 각 레그의 최종 상태가
+            # cancelled/rejected(재큐·체결 불가)일 때만 소멸로 본다. open/
+            # expired/filled가 하나라도 있으면 아직 살아 있다.
+            if len(by_leg) < len(plan.entries):
+                continue
+            if any(
+                legs[-1]["status"] not in ("cancelled", "rejected")
+                for legs in by_leg.values()
+            ):
+                continue
+            await self._cancel_plan_orders(
+                broker, plan_id, row["symbol"], "래더 소멸 — abandoned"
+            )
+            self.db.execute(
+                "UPDATE trade_plans SET status = 'abandoned', "
+                "reject_reason = '래더 전 진입 레그 취소/거부' WHERE id = ?",
+                (plan_id,),
+            )
+            await self.bus.publish(
+                Event(
+                    type="log",
+                    agent="trader",
+                    level="warning",
+                    message=(
+                        f"{row['symbol']} 플랜 #{plan_id} 래더 소멸 — 진입 레그 "
+                        f"전량 취소/거부, abandoned (심볼 재진입 차단 해제)"
+                    ),
+                    data={"plan_id": plan_id},
+                )
+            )
 
     async def _enforce_plan_ttl(self, broker: Broker, now_ms: int) -> None:
         """진입 전 plan_ttl_bars 경과 → 래더 전량 취소 (abandoned)."""

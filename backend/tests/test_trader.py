@@ -891,3 +891,73 @@ async def test_maintain_tp_skips_rejected_leg_with_unchanged_qty(
     )
     # 레그 0은 재발주되지 않았다 — 여전히 거부 행 하나뿐.
     assert [r["status"] for r in leg0] == ["rejected"]
+
+
+async def test_abandon_dead_ladder_frees_symbol(db, settings, broker):
+    """래더 전 진입 레그가 취소로 끝나면(체결 0, 포지션 없음) 플랜을 즉시
+    abandoned로 정리해 심볼 재진입 차단을 푼다 (XRP #49, 2026-07-22)."""
+    plan_json = json.dumps({
+        "symbol": SYMBOL, "side": "short", "leverage": 3,
+        "entries": [
+            {"kind": "entry", "price": 101.0, "fraction": 0.5},
+            {"kind": "entry", "price": 101.1, "fraction": 0.25},
+            {"kind": "entry", "price": 101.2, "fraction": 0.25},
+        ],
+        "tps": [{"kind": "tp", "price": 90.0, "fraction": 0.5},
+                {"kind": "tp", "price": 88.0, "fraction": 0.5}],
+        "stop": {"kind": "stop", "price": 101.3, "fraction": 1.0},
+        "evidence": ["a", "b"], "margin_usdt": 100.0,
+    })
+    plan_id = db.execute(
+        "INSERT INTO trade_plans (symbol, side, plan_json, status, filled_fraction) "
+        "VALUES (?, 'short', ?, 'approved', 0.0)", (SYMBOL, plan_json),
+    )[0]["id"]
+    # 3레그 전량 배치 후 exchange 취소 (cancelled로 종결).
+    for leg in range(3):
+        db.execute(
+            "INSERT INTO paper_orders (ts, symbol, side, qty, limit_price, "
+            "reduce_only, status, plan_id, client_order_id) "
+            "VALUES ('2026-07-22T05:45:07+00:00', ?, 'sell', 10, 101.0, 0, "
+            "'cancelled', ?, ?)",
+            (SYMBOL, plan_id, client_order_id(plan_id, "entry", leg, 0)),
+        )
+    monitor = make_monitor(db, settings, broker, NOW_MS)
+    await monitor._abandon_dead_ladders(broker)
+    status = db.execute(
+        "SELECT status, reject_reason FROM trade_plans WHERE id = ?", (plan_id,)
+    )[0]
+    assert status["status"] == "abandoned"
+    assert "래더" in status["reject_reason"]
+
+
+async def test_dead_ladder_guard_spares_partially_placed_or_open(db, settings, broker):
+    """오픈 레그가 남았거나 래더가 아직 전량 배치 전이면 abandon하지 않는다."""
+    plan_json = json.dumps({
+        "symbol": SYMBOL, "side": "short", "leverage": 3,
+        "entries": [
+            {"kind": "entry", "price": 101.0, "fraction": 0.5},
+            {"kind": "entry", "price": 101.1, "fraction": 0.25},
+            {"kind": "entry", "price": 101.2, "fraction": 0.25},
+        ],
+        "tps": [{"kind": "tp", "price": 90.0, "fraction": 0.5},
+                {"kind": "tp", "price": 88.0, "fraction": 0.5}],
+        "stop": {"kind": "stop", "price": 101.3, "fraction": 1.0},
+        "evidence": ["a", "b"], "margin_usdt": 100.0,
+    })
+    plan_id = db.execute(
+        "INSERT INTO trade_plans (symbol, side, plan_json, status, filled_fraction) "
+        "VALUES (?, 'short', ?, 'approved', 0.0)", (SYMBOL, plan_json),
+    )[0]["id"]
+    # 레그 0·1 취소, 레그 2는 아직 open — 살아 있음.
+    for leg, st in ((0, "cancelled"), (1, "cancelled"), (2, "open")):
+        db.execute(
+            "INSERT INTO paper_orders (ts, symbol, side, qty, limit_price, "
+            "reduce_only, status, plan_id, client_order_id) "
+            "VALUES ('2026-07-22T05:45:07+00:00', ?, 'sell', 10, 101.0, 0, ?, ?, ?)",
+            (SYMBOL, st, plan_id, client_order_id(plan_id, "entry", leg, 0)),
+        )
+    monitor = make_monitor(db, settings, broker, NOW_MS)
+    await monitor._abandon_dead_ladders(broker)
+    assert db.execute(
+        "SELECT status FROM trade_plans WHERE id = ?", (plan_id,)
+    )[0]["status"] == "approved"
