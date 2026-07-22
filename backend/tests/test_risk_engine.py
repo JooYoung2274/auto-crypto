@@ -372,3 +372,26 @@ def test_liq_buffer_uses_worst_case_partial_fill(settings):
     result = RiskEngine.review(plan, settings, make_state())
     assert isinstance(result, Rejection)
     assert "청산 버퍼" in result.reason
+
+
+def test_min_stop_distance_gate_rejects_glued_stop(settings):
+    # 진입가와 손절선이 붙은 플랜 (XRP 2026-07-22 사고 재현): 손절 거리가
+    # 하한(0.5%) 미만이면 RR이 아무리 높아도 거부.
+    plan = long_plan(
+        entries=[
+            PlanLeg("entry", 100.0, 0.5),
+            PlanLeg("entry", 99.9, 0.25),
+            PlanLeg("entry", 99.8, 0.25),
+        ],
+        stop=PlanLeg("stop", 99.75, 1.0),  # 가중진입 대비 ~0.2% 거리
+        tps=[PlanLeg("tp", 110.0, 0.5), PlanLeg("tp", 120.0, 0.5)],
+    )
+    result = RiskEngine.review(plan, settings, make_state())
+    assert isinstance(result, Rejection)
+    assert "손절 거리" in result.reason
+
+
+def test_min_stop_distance_gate_allows_normal_stop(settings):
+    # 정상 손절 거리(가중진입 98.5 대비 stop 92 = 6.6%)는 통과.
+    result = RiskEngine.review(long_plan(), settings, make_state())
+    assert isinstance(result, Approval)

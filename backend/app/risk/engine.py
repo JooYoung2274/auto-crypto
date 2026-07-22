@@ -144,6 +144,16 @@ class RiskEngine:
             )
             return Rejection(f"기하 검증 실패: {plan.side}는 {order_txt} 순서여야 함")
 
+        # 최소 손절 거리 — 진입가와 손절선이 붙으면 RR이 뻥튀기되고 진입 즉시
+        # 무효화된다. 가중 진입가 대비 손절 거리가 하한 미만이면 거부.
+        w_entry = plan.weighted_entry
+        stop_dist = abs(w_entry - plan.stop.price)
+        if w_entry > 0 and stop_dist / w_entry < settings.min_stop_distance_pct:
+            return Rejection(
+                f"손절 거리 {stop_dist / w_entry:.2%} < 최소 "
+                f"{settings.min_stop_distance_pct:.2%} — 진입가·손절선 근접 거부"
+            )
+
         # 손익비 게이트 (규칙 §1).
         min_rr = RiskEngine.min_rr(plan.symbol, settings)
         rr = plan.rr

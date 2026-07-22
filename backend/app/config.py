@@ -51,6 +51,9 @@ class Settings(BaseSettings):
     plan_ttl_bars: int = 96
     # 손절가는 청산가보다 markPrice 쪽으로 이 비율 이상 여유 필요 (스펙 §2).
     liq_buffer_pct: float = 0.10
+    # 최소 손절 거리 — 가중 진입가 대비 손절 거리가 이 비율 미만이면 거부.
+    # 진입가와 손절선이 붙어 RR이 뻥튀기되고 진입 즉시 무효화되는 플랜 차단.
+    min_stop_distance_pct: float = 0.005
     # 펀딩 이력 부재 시 근사 요율 (0.01% / 8h).
     funding_default_rate: float = 0.0001
     # 런타임 포트폴리오 게이트 (스펙 §2).
