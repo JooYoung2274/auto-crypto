@@ -385,13 +385,14 @@ class TestSpec:
 
 
 class TestRegistry:
-    def test_templates_are_the_five_coin_templates(self):
+    def test_templates_are_the_coin_templates(self):
         assert set(TEMPLATES) == {
             "topdown_pullback",
             "ma_confluence",
             "box_range",
             "vwma_support",
             "candle_breakout",
+            "vpvr_accum",  # 가이드 p118-119 매집 시그널 (2026-07-22)
         }
 
     def test_grid_ranges_match_spec(self):
@@ -487,3 +488,84 @@ class TestRegistry:
                     continue
                 result = RiskEngine.review(plan, settings, state)
                 assert result.approved, f"{spec.id_key()}: {result.reason}"
+
+
+# -- vpvr_accum: 상승 후 횡보 매집 → 2차 상승 롱 (가이드 p118-119) --------------------
+
+
+def accum_frames(volume_at: str = "consol") -> dict:
+    """상승(+12%, 40×4h) 후 전고점 아래 타이트 횡보(24×4h) 경로.
+
+    volume_at='consol'이면 거래량이 횡보 구간에 집중(매집), 'high'면
+    상승 고점 구간에 집중(매집 아님 — 시그널이 나오면 안 됨).
+    """
+    rise_bars = 40 * 16  # 15m 봉 수 (4h = 16×15m)
+    consol_bars = 24 * 16
+    warmup = 80 * 16
+    rng = np.random.default_rng(7)
+    warm = 100.0 + np.cumsum(rng.normal(0, 0.02, warmup))
+    rise = np.linspace(warm[-1], warm[-1] * 1.12, rise_bars)
+    top = rise[-1]
+    consol_mid = top * 0.965  # 전고점 약 3.5% 아래에서 횡보
+    # 고점→횡보 전환 1×4h봉(16×15m): 템플릿의 '최근 24봉' 횡보 윈도우가
+    # 하락 전환봉의 고점을 포함하지 않게 분리한다.
+    glide = np.linspace(top, consol_mid, 16)
+    consol = consol_mid * (1 + 0.004 * np.sin(np.linspace(0, 12, consol_bars)))
+    close = np.concatenate([warm, rise, glide, consol])
+    volume = np.full(len(close), 500.0)
+    if volume_at == "consol":
+        volume[-consol_bars:] = 6_000.0
+    else:
+        volume[-consol_bars - rise_bars // 4 : -consol_bars] = 6_000.0
+    return frames_from_close(close, volume=volume, spread=0.0002)
+
+
+VPVR_PARAMS = dict(
+    rise_bars=40, rise_min=0.05, consol_bars=24, consol_band=0.03,
+    vp_window=120, conc_min=0.30, stop_pad=0.01, tp_r1=3.0, tp_r2=5.0,
+    leverage=5,
+)
+
+
+class TestVpvrAccum:
+    def test_accumulation_emits_long_plan(self):
+        from app.strategies import vpvr_accum
+
+        p = vpvr_accum.plan(accum_frames("consol"), ALT, **VPVR_PARAMS)
+        assert p is not None and p.side == "long"
+        # 손절 = 횡보 밴드 하단 아래 (시나리오 붕괴 지점).
+        h4 = accum_frames("consol")["4h"]
+        consol_low = float(h4["low"].to_numpy()[-24:].min())
+        assert p.stop.price < consol_low
+        assert len(p.evidence) >= 2 and any("매집" in e for e in p.evidence)
+        # 정적 게이트 통과 (RR·기하·분할 구조).
+        from app.config import Settings
+        from app.risk.engine import RiskEngine
+        from tests.test_risk_engine import make_state
+
+        settings = Settings(_env_file=None)
+        mark = float(h4["close"].iloc[-1])
+        verdict = RiskEngine.review(
+            p, settings, make_state(mark_price=mark)
+        )
+        assert verdict.approved, getattr(verdict, "reason", "")
+
+    def test_volume_at_prior_high_stays_flat(self):
+        from app.strategies import vpvr_accum
+
+        assert vpvr_accum.plan(accum_frames("high"), ALT, **VPVR_PARAMS) is None
+
+    def test_tail_poison_does_not_change_earlier_decision(self):
+        from app.strategies import vpvr_accum
+
+        frames = accum_frames("consol")
+        clipped = {tf: df.iloc[:-16] for tf, df in frames.items()}
+        before = vpvr_accum.plan(clipped, ALT, **VPVR_PARAMS)
+        poisoned = {tf: df.copy() for tf, df in frames.items()}
+        for tf, df in poisoned.items():
+            df.iloc[-1, df.columns.get_loc("close")] = 1.0  # 미래 오염
+        clipped_after = {tf: df.iloc[:-16] for tf, df in poisoned.items()}
+        after = vpvr_accum.plan(clipped_after, ALT, **VPVR_PARAMS)
+        assert (before is None) == (after is None)
+        if before is not None:
+            assert before.stop.price == after.stop.price

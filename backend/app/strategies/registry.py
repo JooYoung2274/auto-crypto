@@ -9,6 +9,7 @@ from . import (
     candle_breakout,
     ma_confluence,
     topdown_pullback,
+    vpvr_accum,
     vwma_support,
 )
 from .base import ParamGrid, ParamRange, StrategySpec
@@ -68,6 +69,19 @@ TEMPLATES: dict[str, ParamGrid] = {
         "tp_r2": TP_R2_RANGE,
         "leverage": LEVERAGE_RANGE,
     },
+    # 가이드 p118-119 (2026-07-22 추가): 상승 후 횡보 구간 VPVR 매집 → 2차 상승 롱.
+    "vpvr_accum": {
+        "rise_bars": ParamRange(20, 60),
+        "rise_min": ParamRange(0.04, 0.15, is_int=False),
+        "consol_bars": ParamRange(12, 42),
+        "consol_band": ParamRange(0.015, 0.05, is_int=False),
+        "vp_window": ParamRange(80, 200),
+        "conc_min": ParamRange(0.25, 0.50, is_int=False),
+        "stop_pad": ParamRange(0.005, 0.02, is_int=False),
+        "tp_r1": TP_R1_RANGE,
+        "tp_r2": TP_R2_RANGE,
+        "leverage": LEVERAGE_RANGE,
+    },
 }
 
 PLAN_FUNCS = {
@@ -76,6 +90,7 @@ PLAN_FUNCS = {
     "box_range": box_range.plan,
     "vwma_support": vwma_support.plan,
     "candle_breakout": candle_breakout.plan,
+    "vpvr_accum": vpvr_accum.plan,
 }
 
 
