@@ -235,7 +235,8 @@ def test_full_cycle_rest_contract(client, monkeypatch):
     pf = client.get("/api/portfolio").json()
     assert set(pf) == {
         "wallet_balance", "available", "margin_used", "unrealized_pnl",
-        "funding_cum", "withdrawn_cum", "positions", "snapshots",
+        "funding_cum", "withdrawn_cum", "realized_pnl_cum", "closed_trades",
+        "win_trades", "positions", "snapshots",
     }
     assert pf["wallet_balance"] == pytest.approx(10_000.0)
     assert pf["withdrawn_cum"] == 0.0  # 아직 스윕 전
@@ -663,6 +664,12 @@ def test_trade_history_rollup(client):
     stop_row = next(r for r in rows if r["symbol"] == "XRPUSDT")
     assert stop_row["exit_reason"] == "손절"
     assert stop_row["pnl_usdt"] == pytest.approx(-3.0)  # (1.10-1.13)×100
+
+    # 포트폴리오 누적 실현 손익 = 익절(+73.2) + 손절(-3.0) = +70.2, 2거래 1승.
+    pf = client.get("/api/portfolio").json()
+    assert pf["realized_pnl_cum"] == pytest.approx(70.2)
+    assert pf["closed_trades"] == 2
+    assert pf["win_trades"] == 1
 
 
 def test_trade_history_liquidation_bounded_by_next_plan(client):

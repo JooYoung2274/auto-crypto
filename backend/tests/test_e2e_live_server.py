@@ -197,7 +197,8 @@ async def test_live_server_full_cycle(live_server):
         portfolio = (await client.get("/api/portfolio")).json()
         assert set(portfolio) == {
             "wallet_balance", "available", "margin_used", "unrealized_pnl",
-            "funding_cum", "withdrawn_cum", "positions", "snapshots",
+            "funding_cum", "withdrawn_cum", "realized_pnl_cum", "closed_trades",
+        "win_trades", "positions", "snapshots",
         }
         assert portfolio["wallet_balance"] == pytest.approx(10_000.0)
         assert portfolio["snapshots"], "trade cycle must snapshot the portfolio"

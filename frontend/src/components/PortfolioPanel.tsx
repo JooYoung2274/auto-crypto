@@ -86,6 +86,23 @@ export function PortfolioPanel({ version = 0 }: Props) {
             {fmtUsdt(pf.withdrawn_cum ?? 0)}
           </span>
         </div>
+        <div className="metric-tile">
+          <span className="metric-label">
+            누적 실현 손익
+            {typeof pf.closed_trades === "number" && pf.closed_trades > 0 && (
+              <span className="metric-sub">
+                {" "}
+                {pf.win_trades}승 {pf.closed_trades - (pf.win_trades ?? 0)}패
+              </span>
+            )}
+          </span>
+          <span
+            className={`metric-value ${pnlClass(pf.realized_pnl_cum ?? 0)}`}
+            title="종결된 모든 거래(익절·손절·청산)의 순손익 합 — 매매로 번/잃은 금액"
+          >
+            {fmtSignedUsdt(pf.realized_pnl_cum ?? 0)}
+          </span>
+        </div>
       </div>
       {chartData.length > 0 && <EquityChart data={chartData} color="#52a9ff" />}
       <div className="table-scroll">

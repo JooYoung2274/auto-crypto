@@ -513,20 +513,22 @@ async def get_positions(request: Request) -> list[dict]:
     return [_position_info(pos, db, now_ms) for pos in positions]
 
 
-@router.get("/trade-history")
-async def get_trade_history(request: Request, limit: int = 50) -> list[dict]:
-    """종결된 플랜의 실현 손익 내역 (손절/익절/강제 청산 라벨 포함).
+def _trade_history_rows(db, limit: int | None = 50) -> list[dict]:
+    """종결된 플랜의 실현 손익 내역 롤업 (get_trade_history + 누적 합계 공용).
 
     체결 기록(paper_orders 미러 — live도 동일 테이블)을 플랜 단위로 롤업한다.
     강제 청산 행은 plan_id 없이 기록되므로 심볼+사유+시각 윈도로 귀속시킨다.
-    펀딩은 보유 구간의 정산분 합(양수 = 지불 비용)."""
-    db = request.app.state.db
+    펀딩은 보유 구간의 정산분 합(양수 = 지불 비용). limit=None이면 전체."""
     rows: list[dict] = []
-    for plan_row in db.execute(
+    sql = (
         "SELECT * FROM trade_plans WHERE status IN ('closed', 'stopped') "
-        "AND filled_fraction > 0 ORDER BY id DESC LIMIT ?",
-        (int(limit),),
-    ):
+        "AND filled_fraction > 0 ORDER BY id DESC"
+    )
+    query_params: tuple = ()
+    if limit is not None:
+        sql += " LIMIT ?"
+        query_params = (int(limit),)
+    for plan_row in db.execute(sql, query_params):
         plan_id = int(plan_row["id"])
         payload = json.loads(plan_row["plan_json"] or "{}")
         side = plan_row["side"]
@@ -620,6 +622,12 @@ async def get_trade_history(request: Request, limit: int = 50) -> list[dict]:
     return rows
 
 
+@router.get("/trade-history")
+async def get_trade_history(request: Request, limit: int = 50) -> list[dict]:
+    """종결된 플랜의 실현 손익 내역 (손절/익절/강제 청산 라벨 포함)."""
+    return _trade_history_rows(request.app.state.db, limit=int(limit))
+
+
 @router.get("/portfolio")
 async def get_portfolio(request: Request) -> dict:
     """선물 지갑 요약 (총자산/사용가능/포지션마진/미실현/펀딩) + 포지션 +
@@ -639,6 +647,11 @@ async def get_portfolio(request: Request) -> dict:
         "ORDER BY id DESC LIMIT 100) ORDER BY id"
     )
     funding_cum = snapshots[-1]["funding_cum"] if snapshots else 0.0
+    # 누적 실현 손익 — 종결된 모든 거래(익절·손절·청산)의 순손익 합. 초기
+    # 예치금 오차와 무관하게 '매매로 번/잃은 금액'만 집계 (limit=None = 전체).
+    history = _trade_history_rows(db, limit=None)
+    realized_pnl_cum = sum(float(r["pnl_usdt"]) for r in history)
+    wins = sum(1 for r in history if r["pnl_usdt"] > 0)
     return {
         "wallet_balance": balance.wallet_balance,
         "available": balance.available,
@@ -651,6 +664,10 @@ async def get_portfolio(request: Request) -> dict:
                 "SELECT COALESCE(SUM(amount), 0.0) AS total FROM withdrawal_ledger"
             )[0]["total"]
         ),
+        # 누적 실현 손익 + 승/패 카운트 (매매 성과 요약).
+        "realized_pnl_cum": realized_pnl_cum,
+        "closed_trades": len(history),
+        "win_trades": wins,
         "positions": positions,
         "snapshots": snapshots,
     }

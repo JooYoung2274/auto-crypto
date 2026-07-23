@@ -282,6 +282,12 @@ export interface PortfolioResponse {
   funding_cum?: number | null
   /** 복리 금지 스윕 누적 출금 수익 (withdrawal_ledger 합, USDT). */
   withdrawn_cum?: number | null
+  /** 누적 실현 손익 — 종결 거래 순손익 합 (익절·손절·청산, USDT). */
+  realized_pnl_cum?: number | null
+  /** 종결 거래 수. */
+  closed_trades?: number | null
+  /** 그중 수익 거래 수. */
+  win_trades?: number | null
   positions: PositionInfo[]
   snapshots: PortfolioSnapshot[]
 }

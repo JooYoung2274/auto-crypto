@@ -1108,3 +1108,10 @@ td.rank {
   background: #4a1d24;
   color: #ff8fa3;
 }
+
+/* 타일 부제 (누적 실현 손익 승/패 카운트) */
+.metric-sub {
+  font-size: 0.72rem;
+  font-weight: 400;
+  opacity: 0.65;
+}
