@@ -129,6 +129,58 @@ def floor_to_step(qty: float, step: float) -> float:
     return round(math.floor(qty / step + 1e-9) * step, 12)
 
 
+#: 출금 스윕 마지막 실행 날짜 키 (UTC 일 1회 제한, PaperBroker와 공유).
+_LAST_SKIM_KEY = "last_skim_date"
+
+
+def ledger_only_skim(db, settings, balance, now_ms: int) -> float:
+    """라이브 장부 전용 출금 스윕 — 실제 이체 없이 withdrawal_ledger에만 기록.
+
+    거래소 잔고는 줄일 수 없으므로(실이체 안 함) **이미 원장에 격리된 누적액을
+    차감**해 같은 수익을 재차 격리하지 않는다. UTC 일 1회.
+
+    격리액 = max(0, 실현잔고 − 사용마진 − 시드 − 기존 원장 누적).
+    실현잔고 = wallet_balance − 미실현손익 (마크투마켓 제외 — 실현분만).
+    복리 금지는 이미 사이징 게이트(min(잔고, 시드))로 강제되므로, 이 스윕은
+    '시드 초과 실현 수익'을 장부상 가시화하는 용도다 (규칙 §1)."""
+    if db is None:
+        return 0.0
+    from datetime import datetime, timezone
+
+    today = datetime.fromtimestamp(now_ms / 1000.0, tz=timezone.utc).strftime("%Y-%m-%d")
+    rows = db.execute("SELECT value FROM paper_state WHERE key = ?", (_LAST_SKIM_KEY,))
+    if rows and str(rows[0]["value"]) == today:
+        return 0.0
+    prior = float(
+        db.execute(
+            "SELECT COALESCE(SUM(amount), 0.0) AS t FROM withdrawal_ledger"
+        )[0]["t"]
+    )
+    realized = float(balance.wallet_balance) - float(balance.unrealized_pnl or 0.0)
+    amount = max(
+        0.0,
+        realized
+        - float(balance.margin_used or 0.0)
+        - float(settings.initial_seed_usdt)
+        - prior,
+    )
+    # 일자 마커는 항상 갱신 (0이어도) — 하루 1회 판정 유지.
+    db.execute(
+        "INSERT OR REPLACE INTO paper_state (key, value) VALUES (?, ?)",
+        (_LAST_SKIM_KEY, today),
+    )
+    if amount <= 0.0:
+        return 0.0
+    ts = datetime.fromtimestamp(now_ms / 1000.0, tz=timezone.utc).isoformat(
+        timespec="seconds"
+    )
+    db.execute(
+        "INSERT INTO withdrawal_ledger (ts, amount, reason) VALUES (?, ?, ?)",
+        (ts, amount, "시드 초과 수익 장부 격리 — 복리 금지 (실이체 없음)"),
+    )
+    return amount
+
+
 class Broker(ABC):
     """공통 검증을 가진 브로커 ABC.
 

@@ -985,3 +985,54 @@ async def test_settle_updates_partial_fill_on_unchanged_status(api, live_db):
         assert row["filled_qty"] == pytest.approx(0.01)  # 1계약 × ctVal 0.01
     finally:
         await broker.aclose()
+
+
+# -- 라이브 장부 전용 출금 스윕 (ledger_only_skim) ---------------------------------
+def _mk_balance(wallet, margin_used=0.0, unrealized=0.0):
+    from app.broker.base import Balance
+    return Balance(wallet_balance=wallet, available=wallet - margin_used,
+                   margin_used=margin_used, unrealized_pnl=unrealized)
+
+
+def test_ledger_only_skim_records_excess_without_touching_wallet(tmp_path):
+    from app.broker.base import ledger_only_skim
+    db = Database(str(tmp_path / "skim.db"))
+    s = Settings(_env_file=None, initial_seed_usdt=1900.0)
+    # 실현 잔고 2000, 시드 1900 → 초과 100 격리. 실제 지갑은 안 건드림(장부만).
+    amt = ledger_only_skim(db, s, _mk_balance(2000.0), now_ms=1_000_000_000_000)
+    assert amt == pytest.approx(100.0)
+    ledger = db.execute("SELECT amount, reason FROM withdrawal_ledger")
+    assert len(ledger) == 1 and ledger[0]["amount"] == pytest.approx(100.0)
+    assert "실이체 없음" in ledger[0]["reason"]
+    db.close()
+
+
+def test_ledger_only_skim_subtracts_prior_and_daily_once(tmp_path):
+    from app.broker.base import ledger_only_skim
+    db = Database(str(tmp_path / "skim2.db"))
+    s = Settings(_env_file=None, initial_seed_usdt=1900.0)
+    day1 = 1_000_000_000_000
+    assert ledger_only_skim(db, s, _mk_balance(2000.0), day1) == pytest.approx(100.0)
+    # 같은 날 재호출 → 0 (UTC 일 1회).
+    assert ledger_only_skim(db, s, _mk_balance(2000.0), day1) == 0.0
+    # 다음 날, 잔고 그대로 2000 → 기존 원장 100 차감되어 추가 격리 0 (이중계상 방지).
+    day2 = day1 + 86_400_000
+    assert ledger_only_skim(db, s, _mk_balance(2000.0), day2) == 0.0
+    # 잔고가 2050으로 증가한 다음 날 → 추가 50만 격리.
+    day3 = day2 + 86_400_000
+    assert ledger_only_skim(db, s, _mk_balance(2050.0), day3) == pytest.approx(50.0)
+    assert db.execute("SELECT COALESCE(SUM(amount),0) AS t FROM withdrawal_ledger")[0]["t"] == pytest.approx(150.0)
+    db.close()
+
+
+def test_ledger_only_skim_excludes_unrealized_and_loss(tmp_path):
+    from app.broker.base import ledger_only_skim
+    db = Database(str(tmp_path / "skim3.db"))
+    s = Settings(_env_file=None, initial_seed_usdt=1900.0)
+    t = 1_000_000_000_000
+    # 지갑 2100인데 200은 미실현 → 실현 1900 = 시드 → 격리 0.
+    assert ledger_only_skim(db, s, _mk_balance(2100.0, unrealized=200.0), t) == 0.0
+    # 손실로 시드 아래 → 격리 0.
+    assert ledger_only_skim(db, s, _mk_balance(1850.0), t + 86_400_000) == 0.0
+    assert db.execute("SELECT COUNT(*) AS c FROM withdrawal_ledger")[0]["c"] == 0
+    db.close()

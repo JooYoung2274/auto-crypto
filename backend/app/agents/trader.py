@@ -14,6 +14,7 @@ closed|stopped|abandoned. 손절 판정·TTL·펀딩·청산 경고는 PositionM
 from __future__ import annotations
 
 import asyncio
+import inspect
 import dataclasses
 import datetime as dt
 import json
@@ -119,7 +120,11 @@ class Trader(AgentBase):
             await self._log_order(order)
         skim = getattr(broker, "skim_withdrawal", None)
         if skim is not None:
-            amount = await asyncio.to_thread(skim, now_ms)
+            # 페이퍼는 동기(지갑 물리 차감), 라이브는 비동기(잔고 조회 후 장부만).
+            if inspect.iscoroutinefunction(skim):
+                amount = await skim(now_ms)
+            else:
+                amount = await asyncio.to_thread(skim, now_ms)
             if amount > 0:
                 await self.log(
                     f"시드 초과 수익 {amount:,.2f} USDT 출금 원장 분리 — "

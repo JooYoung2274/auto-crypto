@@ -38,7 +38,15 @@ from typing import Any, Callable
 import httpx
 
 from ..config import Settings
-from .base import Balance, Broker, Order, OrderRequest, Position, Quote
+from .base import (
+    Balance,
+    Broker,
+    Order,
+    OrderRequest,
+    Position,
+    Quote,
+    ledger_only_skim,
+)
 
 BASE_URL = "https://www.okx.com"
 
@@ -334,6 +342,15 @@ class OKXBroker(Broker):
         open_orders = await self.get_open_orders()
         positions = await self.get_positions()
         return {"open_orders": open_orders, "positions": positions}
+
+    async def skim_withdrawal(self, now_ms: int) -> float:
+        """장부 전용 출금 스윕 (실이체 없음) — 시드 초과 실현 수익을
+        withdrawal_ledger에 격리한다 (규칙 §1). 거래소 잔고는 건드리지
+        않는다. trader.settle이 UTC 일 1회 호출."""
+        balance = await self.get_balance()
+        return await asyncio.to_thread(
+            ledger_only_skim, self.db, self.settings, balance, now_ms
+        )
 
     def check_daily_loss(self, daily_realized_pnl: float) -> bool:
         """일손실 서킷브레이커 — 임계 초과 시 reduce-only 킬스위치 모드 진입
