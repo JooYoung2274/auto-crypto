@@ -19,6 +19,7 @@ from __future__ import annotations
 import asyncio
 import contextlib
 import logging
+import sys
 import time
 from contextlib import asynccontextmanager
 from pathlib import Path
@@ -36,7 +37,18 @@ from .events import EventBus
 from .orchestrator import CycleInProgressError, Orchestrator
 from .ws import WsManager
 
-FRONTEND_DIST = Path(__file__).resolve().parents[2] / "frontend" / "dist"
+def _resolve_frontend_dist() -> Path:
+    """빌드된 프론트엔드 위치. PyInstaller 번들(데스크탑 앱)이면 _MEIPASS의
+    frontend_dist를, 아니면 개발 트리의 frontend/dist를 쓴다."""
+    bundled = getattr(sys, "_MEIPASS", None)
+    if bundled:
+        cand = Path(bundled) / "frontend_dist"
+        if cand.is_dir():
+            return cand
+    return Path(__file__).resolve().parents[2] / "frontend" / "dist"
+
+
+FRONTEND_DIST = _resolve_frontend_dist()
 
 AUTO_CYCLE_POLL_SECONDS = 30.0
 

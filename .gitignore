@@ -13,3 +13,8 @@ dist/
 .omc/
 .claude/
 *.log
+
+# 데스크탑 앱 빌드 산출물
+desktop/build/
+desktop/dist/
+*.spec.bak

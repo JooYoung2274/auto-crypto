@@ -751,6 +751,13 @@ async def set_trading_mode(request: Request, body: TradingModeRequest) -> dict:
     if body.mode == settings.trading_mode:
         return {"trading_mode": settings.trading_mode}
 
+    # 페이퍼 전용 빌드 — live 전환 전면 차단 (데스크탑 모의거래 앱).
+    if getattr(settings, "paper_only", False) and body.mode == "live":
+        raise HTTPException(
+            status_code=400,
+            detail="이 빌드는 모의거래 전용입니다 — 실거래 전환이 비활성화되어 있습니다",
+        )
+
     # live 전환은 타이핑 확인 우선 검사 (락 잡기 전 빠른 400).
     if body.mode == "live" and body.confirm != "LIVE":
         raise HTTPException(
@@ -851,6 +858,8 @@ def _config_view(settings) -> dict:
     return {
         # read-only — 모드 변경은 POST /api/trading-mode 로만 (config PUT 무시).
         "trading_mode": settings.trading_mode,
+        # 페이퍼 전용 빌드 여부 — UI가 실거래 전환 버튼을 숨긴다.
+        "paper_only": getattr(settings, "paper_only", False),
         "universe": settings.universe,
         "timeframes": settings.timeframes,
         "execution_timeframe": settings.execution_timeframe,

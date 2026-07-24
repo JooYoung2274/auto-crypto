@@ -112,6 +112,7 @@ def test_status_shape(client):
 def test_config_get_and_put(client):
     cfg = client.get("/api/config").json()
     assert cfg["trading_mode"] == "paper"
+    assert cfg["paper_only"] is False  # 기본 빌드는 실거래 허용
     assert cfg["universe"] == SYMBOLS
     assert cfg["timeframes"] == ["1d", "4h", "15m"]
     assert cfg["execution_timeframe"] == "4h"
@@ -787,3 +788,27 @@ def test_prune_activity_log_normalizes_t_format():
         assert "fresh" in msgs
     finally:
         db.close()
+
+
+def test_paper_only_build_blocks_live_switch(tmp_path, monkeypatch):
+    """페이퍼 전용 빌드(paper_only=True)는 live 전환을 400으로 차단."""
+    monkeypatch.setattr(
+        DataLoader, "_fetch",
+        lambda self, symbol, timeframe, start_ms=None, limit=1500: None,
+    )
+    db_path = str(tmp_path / "po.db")
+    seed_db = Database(db_path)
+    seed_market(seed_db)
+    seed_db.close()
+    settings = Settings(
+        db_path=db_path, universe=SYMBOLS, paper_only=True,
+        okx_api_key="x", okx_api_secret="x", okx_api_passphrase="x",
+        _env_file=None,
+    )
+    app = create_app(settings, meeting_seconds=0.01)
+    with TestClient(app) as c:
+        assert c.get("/api/config").json()["paper_only"] is True
+        r = c.post("/api/trading-mode", json={"mode": "live", "confirm": "LIVE"})
+        assert r.status_code == 400
+        assert "모의거래 전용" in r.json()["detail"]
+        assert c.get("/api/status").json()["trading_mode"] == "paper"

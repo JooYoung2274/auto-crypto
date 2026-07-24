@@ -110,6 +110,7 @@ export default function App() {
   const [tab, setTab] = useState<TabId>("team")
   const [team, dispatchTeam] = useReducer(reduceTeamEvent, emptyTeamState)
   const [busy, setBusy] = useState(false)
+  const [paperOnly, setPaperOnly] = useState(false)
   const [notice, setNotice] = useState<string | null>(null)
 
   const appendLog = useCallback((log: LogEntry) => {
@@ -156,6 +157,17 @@ export default function App() {
   )
 
   // ?demo=1: replay the scripted cycle in a loop, no backend required.
+  // 모의거래 전용 빌드 여부 — 실거래 전환 버튼 숨김 (데스크탑 앱).
+  useEffect(() => {
+    if (demo) return
+    api
+      .getConfig()
+      .then((c) => setPaperOnly(Boolean((c as { paper_only?: boolean }).paper_only)))
+      .catch(() => {
+        /* config 로드 실패 시 기본값(false) 유지 */
+      })
+  }, [demo])
+
   const demoLogId = useRef(1)
   useEffect(() => {
     if (!demo) return
@@ -371,6 +383,7 @@ export default function App() {
           onGoalStart={onGoalStart}
           onGoalStop={onGoalStop}
           onSwitchMode={onSwitchMode}
+          paperOnly={paperOnly}
         />
       </header>
       {notice && <div className="app-notice">{notice}</div>}

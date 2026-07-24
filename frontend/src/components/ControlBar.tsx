@@ -16,6 +16,8 @@ interface Props {
   onGoalStop: () => void
   /** 모드 전환 요청 — live 전환은 confirm 타이핑 텍스트("LIVE")를 함께 넘긴다. */
   onSwitchMode: (mode: TradingMode, confirm?: string) => void
+  /** 모의거래 전용 빌드 — 실거래 전환 버튼을 숨긴다 (데스크탑 앱). */
+  paperOnly?: boolean
 }
 
 /** live 전환 확인 모달에서 정확히 타이핑해야 하는 문구 (spec §5 confirm:'LIVE'). */
@@ -46,6 +48,7 @@ export function ControlBar({
   onGoalStart,
   onGoalStop,
   onSwitchMode,
+  paperOnly = false,
 }: Props) {
   // A run is active whenever a cycle object exists; start buttons are hidden then.
   const active = cycle !== null
@@ -83,7 +86,7 @@ export function ControlBar({
       >
         {mode === "live" ? "LIVE 실거래" : mode === "paper" ? "PAPER 모의" : "연결 대기"}
       </span>
-      {mode !== null && (
+      {mode !== null && !paperOnly && (
         <button
           type="button"
           className={`btn ${toLive ? "btn-live" : "btn-start"}`}

@@ -20,6 +20,8 @@ class Settings(BaseSettings):
     )
 
     trading_mode: Literal["paper", "live"] = "paper"
+    # 페이퍼 전용 빌드 — true면 live 전환을 전면 차단 (데스크탑 모의거래 앱).
+    paper_only: bool = False
     # 화이트리스트 = 저시총 금지 (규칙 §1) — 이 외 심볼은 RiskEngine이 거부.
     universe: list[str] = [
         "BTCUSDT",
