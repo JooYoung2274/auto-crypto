@@ -288,6 +288,10 @@ export interface PortfolioResponse {
   closed_trades?: number | null
   /** 그중 수익 거래 수. */
   win_trades?: number | null
+  /** 매매 가용 자금 = min(지갑, 시드) — 복리 금지 사이징 게이트 값. */
+  trading_capital?: number | null
+  /** 고정 시드 (USDT). */
+  seed?: number | null
   positions: PositionInfo[]
   snapshots: PortfolioSnapshot[]
 }

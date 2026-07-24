@@ -78,6 +78,20 @@ export function PortfolioPanel({ version = 0 }: Props) {
           <span className={`metric-value ${pnlClass(pf.unrealized_pnl)}`}>{fmtSignedUsdt(pf.unrealized_pnl)}</span>
         </div>
         <div className="metric-tile">
+          <span className="metric-label">
+            매매 가용 자금
+            {typeof pf.seed === "number" && (
+              <span className="metric-sub"> 시드 {fmtUsdt(pf.seed)}</span>
+            )}
+          </span>
+          <span
+            className="metric-value"
+            title="복리 금지 — 매매에는 min(지갑, 시드)만 사용합니다. 초과 수익은 매매에 재투입되지 않고 시드로 고정됩니다"
+          >
+            {fmtUsdt(pf.trading_capital ?? pf.seed ?? 0)}
+          </span>
+        </div>
+        <div className="metric-tile">
           <span className="metric-label">누적 출금 수익</span>
           <span
             className={`metric-value ${typeof pf.withdrawn_cum === "number" && pf.withdrawn_cum > 0 ? "pos" : ""}`}

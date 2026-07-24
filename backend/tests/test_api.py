@@ -236,7 +236,7 @@ def test_full_cycle_rest_contract(client, monkeypatch):
     assert set(pf) == {
         "wallet_balance", "available", "margin_used", "unrealized_pnl",
         "funding_cum", "withdrawn_cum", "realized_pnl_cum", "closed_trades",
-        "win_trades", "positions", "snapshots",
+        "win_trades", "trading_capital", "seed", "positions", "snapshots",
     }
     assert pf["wallet_balance"] == pytest.approx(10_000.0)
     assert pf["withdrawn_cum"] == 0.0  # 아직 스윕 전
@@ -670,6 +670,11 @@ def test_trade_history_rollup(client):
     assert pf["realized_pnl_cum"] == pytest.approx(70.2)
     assert pf["closed_trades"] == 2
     assert pf["win_trades"] == 1
+    # 매매 가용 자금 = min(지갑 10000, 시드 10000) = 10000 (사이징 게이트 값).
+    assert pf["seed"] == pytest.approx(10_000.0)
+    assert pf["trading_capital"] == pytest.approx(
+        min(pf["wallet_balance"], 10_000.0)
+    )
 
 
 def test_trade_history_liquidation_bounded_by_next_plan(client):

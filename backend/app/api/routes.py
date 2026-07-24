@@ -668,6 +668,13 @@ async def get_portfolio(request: Request) -> dict:
         "realized_pnl_cum": realized_pnl_cum,
         "closed_trades": len(history),
         "win_trades": wins,
+        # 매매 가용 자금 = min(지갑, 시드) — 복리 금지 사이징 게이트가 쓰는 값
+        # (규칙 §1). 출금 격리분·초과 수익은 매매에 안 쓰이고 시드로 고정.
+        "trading_capital": min(
+            float(balance.wallet_balance),
+            float(request.app.state.settings.initial_seed_usdt),
+        ),
+        "seed": float(request.app.state.settings.initial_seed_usdt),
         "positions": positions,
         "snapshots": snapshots,
     }
