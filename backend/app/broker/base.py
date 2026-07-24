@@ -133,7 +133,7 @@ def floor_to_step(qty: float, step: float) -> float:
 _LAST_SKIM_KEY = "last_skim_date"
 
 
-def ledger_only_skim(db, settings, balance, now_ms: int) -> float:
+def ledger_only_skim(db, settings, balance, now_ms: int | None = None) -> float:
     """라이브 장부 전용 출금 스윕 — 실제 이체 없이 withdrawal_ledger에만 기록.
 
     거래소 잔고는 줄일 수 없으므로(실이체 안 함) **이미 원장에 격리된 누적액을
@@ -145,8 +145,11 @@ def ledger_only_skim(db, settings, balance, now_ms: int) -> float:
     '시드 초과 실현 수익'을 장부상 가시화하는 용도다 (규칙 §1)."""
     if db is None:
         return 0.0
+    import time as _time
     from datetime import datetime, timezone
 
+    if now_ms is None:  # trader.settle이 now_ms 없이 호출 → 현재 시각.
+        now_ms = int(_time.time() * 1000)
     today = datetime.fromtimestamp(now_ms / 1000.0, tz=timezone.utc).strftime("%Y-%m-%d")
     rows = db.execute("SELECT value FROM paper_state WHERE key = ?", (_LAST_SKIM_KEY,))
     if rows and str(rows[0]["value"]) == today:

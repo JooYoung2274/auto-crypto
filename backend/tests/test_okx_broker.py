@@ -1036,3 +1036,14 @@ def test_ledger_only_skim_excludes_unrealized_and_loss(tmp_path):
     assert ledger_only_skim(db, s, _mk_balance(1850.0), t + 86_400_000) == 0.0
     assert db.execute("SELECT COUNT(*) AS c FROM withdrawal_ledger")[0]["c"] == 0
     db.close()
+
+
+def test_ledger_only_skim_handles_none_now_ms(tmp_path):
+    """trader.settle이 now_ms 없이 호출 → None이 넘어와도 현재 시각으로 동작
+    (사이클 #390 실패 회귀 — None / 1000.0 TypeError)."""
+    from app.broker.base import ledger_only_skim
+    db = Database(str(tmp_path / "skim_none.db"))
+    s = Settings(_env_file=None, initial_seed_usdt=1900.0)
+    amt = ledger_only_skim(db, s, _mk_balance(2000.0), None)  # now_ms=None
+    assert amt == pytest.approx(100.0)
+    db.close()

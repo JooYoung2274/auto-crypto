@@ -341,7 +341,7 @@ class BinanceBroker(Broker):
         positions = await self.get_positions()
         return {"open_orders": open_orders, "positions": positions}
 
-    async def skim_withdrawal(self, now_ms: int) -> float:
+    async def skim_withdrawal(self, now_ms: int | None = None) -> float:
         """장부 전용 출금 스윕 (실이체 없음) — 시드 초과 실현 수익을
         withdrawal_ledger에 격리한다 (규칙 §1). 거래소 잔고는 건드리지
         않는다. trader.settle이 UTC 일 1회 호출."""
