@@ -1,7 +1,12 @@
 import { useCallback, useEffect, useMemo, useReducer, useRef, useState } from "react"
 import "./App.css"
 import { ControlBar } from "./components/ControlBar"
-import { ONBOARDING_KEY, Onboarding, shouldShowOnboarding } from "./components/Onboarding"
+import {
+  CONSENT_KEY,
+  ONBOARDING_KEY,
+  Onboarding,
+  shouldShowOnboarding,
+} from "./components/Onboarding"
 import { LogPanel } from "./components/LogPanel"
 import { Leaderboard } from "./components/Leaderboard"
 import { ChampionPanel } from "./components/ChampionPanel"
@@ -116,10 +121,12 @@ export default function App() {
   // 첫 실행 안내 — 모의거래 전용 빌드에서 아직 닫지 않았을 때만 자동 노출.
   const [showGuide, setShowGuide] = useState(false)
 
-  const closeGuide = useCallback(() => {
+  const closeGuide = useCallback((consented: boolean) => {
     setShowGuide(false)
     try {
       window.localStorage.setItem(ONBOARDING_KEY, "done")
+      // 면책 고지를 확인했다는 기록 (확인 시각). 건너뛴 경우엔 남기지 않는다.
+      if (consented) window.localStorage.setItem(CONSENT_KEY, new Date().toISOString())
     } catch {
       // 프라이빗 모드 등 저장 실패 — 다음 실행에 다시 뜨는 것 외엔 문제없다.
     }

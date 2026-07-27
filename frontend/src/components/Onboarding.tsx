@@ -3,6 +3,9 @@ import { useEffect, useState } from "react"
 /** 온보딩 노출 여부를 기억하는 localStorage 키. 문구가 크게 바뀌면 v2로 올린다. */
 export const ONBOARDING_KEY = "coinagent.onboarding.v1"
 
+/** 면책 확인 시각(ISO). 이용자가 고지를 봤다는 기록으로 남긴다. */
+export const CONSENT_KEY = "coinagent.consent.v1"
+
 export interface OnboardingStep {
   title: string
   lines: string[]
@@ -61,20 +64,27 @@ export function shouldShowOnboarding(paperOnly: boolean, stored: string | null):
   return paperOnly && stored !== "done"
 }
 
+/** 마지막 단계에서 면책에 동의해야 '시작하기'가 열린다. */
+export function canFinish(step: number, agreed: boolean): boolean {
+  return step !== ONBOARDING_STEPS.length - 1 || agreed
+}
+
 interface Props {
-  onClose: () => void
+  /** ``consented`` 는 면책 확인 체크 후 '시작하기'로 닫았는지 여부. */
+  onClose: (consented: boolean) => void
 }
 
 /** 3단계 첫 실행 안내 오버레이. */
 export function Onboarding({ onClose }: Props) {
   const [step, setStep] = useState(0)
+  const [agreed, setAgreed] = useState(false)
   const current = ONBOARDING_STEPS[step]
   const last = step === ONBOARDING_STEPS.length - 1
 
   // Esc로도 닫히게 — 모달에 갇힌 느낌을 주지 않는다.
   useEffect(() => {
     const onKey = (e: KeyboardEvent) => {
-      if (e.key === "Escape") onClose()
+      if (e.key === "Escape") onClose(false)
     }
     window.addEventListener("keydown", onKey)
     return () => window.removeEventListener("keydown", onKey)
@@ -105,10 +115,23 @@ export function Onboarding({ onClose }: Props) {
 
         <p className="onboarding-disclaimer">{DISCLAIMER}</p>
 
+        {last && (
+          <label className="onboarding-consent">
+            <input
+              type="checkbox"
+              checked={agreed}
+              onChange={(e) => setAgreed(e.target.checked)}
+            />
+            <span>위 안내와 면책 사항을 확인했습니다.</span>
+          </label>
+        )}
+
         <div className="modal-actions">
-          <button type="button" className="btn btn-ghost" onClick={onClose}>
-            건너뛰기
-          </button>
+          {!last && (
+            <button type="button" className="btn btn-ghost" onClick={() => onClose(false)}>
+              건너뛰기
+            </button>
+          )}
           {step > 0 && (
             <button type="button" className="btn btn-ghost" onClick={() => setStep(step - 1)}>
               이전
@@ -117,7 +140,8 @@ export function Onboarding({ onClose }: Props) {
           <button
             type="button"
             className="btn btn-start"
-            onClick={() => (last ? onClose() : setStep(step + 1))}
+            disabled={!canFinish(step, agreed)}
+            onClick={() => (last ? onClose(true) : setStep(step + 1))}
           >
             {last ? "시작하기" : "다음"}
           </button>

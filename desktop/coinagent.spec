@@ -37,6 +37,19 @@ if not SEED_JSON.is_file():
     raise SystemExit(f"기본 챔피언 시드 없음: {SEED_JSON}")
 datas += [(str(SEED_JSON), "app/seed")]
 
+# 앱 아이콘 — 커밋된 산출물 (재생성: python desktop/make_icons.py).
+ASSETS = ROOT / "desktop" / "assets"
+ICON_ICNS = ASSETS / "icon.icns"
+ICON_ICO = ASSETS / "icon.ico"
+if sys.platform == "darwin":
+    APP_ICON = ICON_ICNS
+elif sys.platform.startswith("win"):
+    APP_ICON = ICON_ICO
+else:
+    APP_ICON = None             # Linux는 실행 파일에 아이콘을 박지 않는다
+if APP_ICON is not None and not APP_ICON.is_file():
+    raise SystemExit(f"앱 아이콘 없음: {APP_ICON} — `python desktop/make_icons.py` 실행")
+
 block_cipher = None
 
 a = Analysis(
@@ -61,6 +74,7 @@ exe = EXE(
     strip=False,
     upx=False,
     console=False,                  # GUI 앱 (콘솔 창 없음)
+    icon=str(APP_ICON) if APP_ICON else None,
 )
 coll = COLLECT(
     exe, a.binaries, a.zipfiles, a.datas,
@@ -71,7 +85,7 @@ if sys.platform == "darwin":
     app = BUNDLE(
         coll,
         name="CoinAgentsOffice.app",
-        icon=None,
+        icon=str(ICON_ICNS),
         bundle_identifier="com.coinagent.office",
         info_plist={
             "NSHighResolutionCapable": True,

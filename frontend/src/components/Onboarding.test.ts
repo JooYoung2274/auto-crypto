@@ -1,8 +1,10 @@
 import { describe, expect, it } from "vitest"
 import {
+  CONSENT_KEY,
   DISCLAIMER,
   ONBOARDING_KEY,
   ONBOARDING_STEPS,
+  canFinish,
   shouldShowOnboarding,
 } from "./Onboarding"
 
@@ -72,5 +74,25 @@ describe("DISCLAIMER", () => {
 describe("ONBOARDING_KEY", () => {
   it("is versioned so copy changes can re-show the guide", () => {
     expect(ONBOARDING_KEY).toMatch(/\.v\d+$/)
+  })
+
+  it("does not collide with the consent record", () => {
+    expect(CONSENT_KEY).not.toBe(ONBOARDING_KEY)
+    expect(CONSENT_KEY).toMatch(/\.v\d+$/)
+  })
+})
+
+describe("canFinish", () => {
+  const lastStep = ONBOARDING_STEPS.length - 1
+
+  it("gates the final button on the disclaimer checkbox", () => {
+    expect(canFinish(lastStep, false)).toBe(false)
+    expect(canFinish(lastStep, true)).toBe(true)
+  })
+
+  it("never blocks the 다음 button on earlier steps", () => {
+    for (let i = 0; i < lastStep; i++) {
+      expect(canFinish(i, false)).toBe(true)
+    }
   })
 })
