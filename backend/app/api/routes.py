@@ -877,6 +877,14 @@ def _config_view(settings) -> dict:
         "rank_w_win_rate": settings.rank_w_win_rate,
         "rank_w_mdd": settings.rank_w_mdd,
         "rank_w_cagr": settings.rank_w_cagr,
+        # LLM 해설 상태 — 키 값은 노출하지 않고 활성 여부/모델만 알린다.
+        "llm": {
+            "enabled": bool(
+                getattr(settings, "llm_enabled", False)
+                and getattr(settings, "anthropic_api_key", "")
+            ),
+            "model": getattr(settings, "llm_model", ""),
+        },
     }
 
 

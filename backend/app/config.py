@@ -109,6 +109,17 @@ class Settings(BaseSettings):
     # 라이브 일손실 서킷브레이커 (reduce-only 킬스위치 진입 임계).
     live_max_loss_pct: float = 0.05
 
+    # ── LLM 해설 (opt-in) ───────────────────────────────────────────────
+    # 매매 판단 경로에는 절대 붙이지 않는다. 리포트 서술만 담당하며,
+    # 키가 없거나 호출이 실패하면 해설 섹션만 빠지고 나머지는 그대로 동작한다.
+    llm_enabled: bool = False
+    anthropic_api_key: str = ""
+    llm_model: str = "claude-opus-5"
+    # 해설은 짧은 요약이므로 저비용 설정 — 필요하면 .env로 올린다.
+    llm_effort: Literal["low", "medium", "high", "xhigh", "max"] = "low"
+    llm_max_tokens: int = 1500
+    llm_timeout_seconds: float = 45.0
+
 
 @lru_cache
 def get_settings() -> Settings:

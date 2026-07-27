@@ -34,6 +34,7 @@ from .data.loader import DataLoader
 from .data.regime import RegimeService
 from .db import Database
 from .events import Event, EventBus
+from .llm import LLMClient
 from .strategies.base import StrategySpec, clip_frames
 
 # Cycle kinds (spec §3): research discovers strategies, validate runs a
@@ -205,7 +206,8 @@ class Orchestrator:
             "strategist": Strategist(bus),
             "quant": Quant(bus),
             "risk": Risk(bus),
-            "analyst": Analyst(bus),
+            # LLM 해설은 이 오케스트레이터의 settings를 그대로 쓴다 (opt-in).
+            "analyst": Analyst(bus, LLMClient(settings)),
             "trader": Trader(bus),
         }
         self.cycle_task: asyncio.Task | None = None

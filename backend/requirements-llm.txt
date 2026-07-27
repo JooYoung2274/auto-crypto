@@ -1,0 +1,7 @@
+# AI 해설 기능(선택). 설치하지 않아도 시스템은 그대로 동작하며,
+# 해설 섹션만 생략된다. 설치 후 backend/.env 에 아래를 추가:
+#
+#   CA_LLM_ENABLED=true
+#   CA_ANTHROPIC_API_KEY=sk-ant-...
+#
+anthropic>=0.69
