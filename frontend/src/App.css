@@ -1115,3 +1115,75 @@ td.rank {
   font-weight: 400;
   opacity: 0.65;
 }
+
+/* ------------------------------------------------------- 첫 실행 안내 (온보딩) */
+
+.guide-button {
+  background: transparent;
+  border: 1px solid #3a3550;
+  border-radius: 3px;
+  color: #b7b2cc;
+  cursor: pointer;
+  font-size: 12px;
+  padding: 3px 9px;
+  margin-left: 10px;
+}
+.guide-button:hover {
+  border-color: #6b63a8;
+  color: #e8e4f2;
+}
+
+.onboarding {
+  width: min(560px, 92vw);
+}
+
+.onboarding-progress {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  margin-bottom: 12px;
+}
+.onboarding-dot {
+  width: 22px;
+  height: 3px;
+  border-radius: 2px;
+  background: #3a3550;
+}
+.onboarding-dot-active {
+  background: #7c6ff0;
+}
+.onboarding-count {
+  margin-left: auto;
+  font-size: 11px;
+  color: #6f6a85;
+  font-family: ui-monospace, monospace;
+}
+
+.onboarding-list {
+  margin: 0 0 12px;
+  padding-left: 18px;
+  font-size: 13px;
+  line-height: 1.7;
+  color: #b7b2cc;
+}
+.onboarding-list li + li {
+  margin-top: 4px;
+}
+
+.onboarding-callout {
+  margin: 0 0 12px;
+  padding: 9px 11px;
+  border-left: 3px solid #7c6ff0;
+  background: rgba(124, 111, 240, 0.08);
+  border-radius: 0 3px 3px 0;
+  font-size: 12.5px;
+  line-height: 1.6;
+  color: #d8d4e8;
+}
+
+.onboarding-disclaimer {
+  margin: 0 0 14px;
+  font-size: 11.5px;
+  line-height: 1.5;
+  color: #6f6a85;
+}

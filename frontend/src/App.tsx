@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useMemo, useReducer, useRef, useState } from "react"
 import "./App.css"
 import { ControlBar } from "./components/ControlBar"
+import { ONBOARDING_KEY, Onboarding, shouldShowOnboarding } from "./components/Onboarding"
 import { LogPanel } from "./components/LogPanel"
 import { Leaderboard } from "./components/Leaderboard"
 import { ChampionPanel } from "./components/ChampionPanel"
@@ -112,6 +113,17 @@ export default function App() {
   const [busy, setBusy] = useState(false)
   const [paperOnly, setPaperOnly] = useState(false)
   const [notice, setNotice] = useState<string | null>(null)
+  // 첫 실행 안내 — 모의거래 전용 빌드에서 아직 닫지 않았을 때만 자동 노출.
+  const [showGuide, setShowGuide] = useState(false)
+
+  const closeGuide = useCallback(() => {
+    setShowGuide(false)
+    try {
+      window.localStorage.setItem(ONBOARDING_KEY, "done")
+    } catch {
+      // 프라이빗 모드 등 저장 실패 — 다음 실행에 다시 뜨는 것 외엔 문제없다.
+    }
+  }, [])
 
   const appendLog = useCallback((log: LogEntry) => {
     setLiveLogs((prev) => (prev.length >= MAX_LIVE_LOGS ? [...prev.slice(1), log] : [...prev, log]))
@@ -162,7 +174,17 @@ export default function App() {
     if (demo) return
     api
       .getConfig()
-      .then((c) => setPaperOnly(Boolean((c as { paper_only?: boolean }).paper_only)))
+      .then((c) => {
+        const isPaperOnly = Boolean((c as { paper_only?: boolean }).paper_only)
+        setPaperOnly(isPaperOnly)
+        let stored: string | null = null
+        try {
+          stored = window.localStorage.getItem(ONBOARDING_KEY)
+        } catch {
+          /* 저장소 접근 불가 — 안내를 한 번 더 띄우는 정도의 영향 */
+        }
+        setShowGuide(shouldShowOnboarding(isPaperOnly, stored))
+      })
       .catch(() => {
         /* config 로드 실패 시 기본값(false) 유지 */
       })
@@ -370,6 +392,16 @@ export default function App() {
         <div className="app-title">
           <h1>Coin Agents Office</h1>
           {demo && <span className="demo-badge">DEMO REPLAY</span>}
+          {paperOnly && (
+            <button
+              type="button"
+              className="guide-button"
+              onClick={() => setShowGuide(true)}
+              title="사용 안내 다시 보기"
+            >
+              ❔ 사용 안내
+            </button>
+          )}
         </div>
         <ControlBar
           mode={mode}
@@ -410,6 +442,7 @@ export default function App() {
           {tab === "portfolio" && <PortfolioPanel version={pfVersion} />}
         </div>
       </section>
+      {showGuide && <Onboarding onClose={closeGuide} />}
     </div>
   )
 }

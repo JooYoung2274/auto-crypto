@@ -30,6 +30,12 @@ for pkg in ("uvicorn", "fastapi", "starlette", "pydantic", "pydantic_settings",
 hiddenimports += collect_submodules("app")
 # 빌드된 프론트엔드를 번들에 포함 (main.py가 _MEIPASS/frontend_dist에서 찾음).
 datas += [(str(FRONTEND_DIST), "frontend_dist")]
+# 기본 챔피언 시드 JSON — 패키지 안의 데이터 파일이라 자동 수집되지 않는다.
+# 빠지면 첫 실행에 챔피언이 없어 30~45분 연구 사이클을 돌려야 한다.
+SEED_JSON = BACKEND / "app" / "seed" / "default_champion.json"
+if not SEED_JSON.is_file():
+    raise SystemExit(f"기본 챔피언 시드 없음: {SEED_JSON}")
+datas += [(str(SEED_JSON), "app/seed")]
 
 block_cipher = None
 

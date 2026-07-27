@@ -55,7 +55,13 @@ def main() -> None:
     os.environ.setdefault("CA_DB_PATH", str(data_dir / "coinagent.db"))
     os.environ.setdefault("CA_BAR_CLOSE_TRADE_ENABLED", "true")
 
-    # PyInstaller 번들이면 backend가 sys.path에 포함돼 있다 (spec에서 처리).
+    # PyInstaller 번들이면 spec의 pathex가 backend를 잡아준다. 소스에서 바로
+    # 실행할 때(개발/스모크 테스트)는 여기서 직접 넣어줘야 `app`을 임포트할 수 있다.
+    if not getattr(sys, "frozen", False):
+        backend = Path(__file__).resolve().parent.parent / "backend"
+        if backend.is_dir() and str(backend) not in sys.path:
+            sys.path.insert(0, str(backend))
+
     port = int(os.environ.get("COIN_PORT") or _free_port())
 
     import uvicorn

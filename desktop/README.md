@@ -43,7 +43,10 @@ cd ../desktop && ../backend/.venv/bin/python -m PyInstaller --noconfirm coinagen
 - **Windows**: `CoinAgentsOffice.exe` 더블클릭
 - **Linux**: `CoinAgentsOffice/CoinAgentsOffice` 실행
 
-첫 실행 후 창에서 **🔬 전략 연구**를 한 번 돌려 챔피언을 만든 뒤, 매매가 시작됩니다.
+**첫 실행 시 바로 모의거래가 돌아갑니다** — 기본 전략(챔피언)이 번들돼 있어 대기 시간이 없습니다.
+처음 켜면 3단계 사용 안내가 한 번 뜨고, 이후에는 헤더의 **❔ 사용 안내** 버튼으로 다시 볼 수 있습니다.
+
+더 좋은 전략을 원하면 **🔬 전략 연구**를 돌리세요 (20~45분 소요, 완료 시 챔피언 자동 교체).
 
 ## 배포 시 주의
 
@@ -56,5 +59,16 @@ cd ../desktop && ../backend/.venv/bin/python -m PyInstaller --noconfirm coinagen
 
 ## 개발자 참고
 
-- `launcher.py` — uvicorn을 백그라운드 스레드로 띄우고 pywebview 네이티브 창을 연다. 페이퍼 전용 환경변수 주입 + 앱데이터 경로 설정.
-- `coinagent.spec` — PyInstaller 스펙. 프론트엔드 `dist`를 `frontend_dist`로 번들(백엔드 `main.py`가 `_MEIPASS/frontend_dist`에서 찾음), pandas/numpy/uvicorn/fastapi/webview를 `collect_all`로 수집.
+- `launcher.py` — uvicorn을 백그라운드 스레드로 띄우고 pywebview 네이티브 창을 연다. 페이퍼 전용 환경변수 주입 + 앱데이터 경로 설정. 소스 실행 시 `backend`를 `sys.path`에 넣는다.
+- `coinagent.spec` — PyInstaller 스펙. 프론트엔드 `dist`를 `frontend_dist`로, 기본 챔피언 시드 JSON을 `app/seed`로 번들하고, pandas/numpy/uvicorn/fastapi/webview를 `collect_all`로 수집.
+- `backend/app/seed/` — 첫 실행 챔피언 시드. **`paper_only=true` + 빈 DB** 두 조건을 모두 만족할 때만 주입되므로 실거래 DB에는 발동하지 않는다.
+- `frontend/src/components/Onboarding.tsx` — 3단계 첫 실행 안내. `paper_only` 빌드에서만 자동 노출되고 `localStorage`로 1회만 뜬다.
+
+### 스모크 테스트 (GUI 없이)
+
+```bash
+cd frontend && npm run build && cd ../desktop
+COIN_HEADLESS=1 COIN_PORT=8891 ../backend/.venv/bin/python launcher.py &
+curl -s localhost:8891/api/champions   # 기본 챔피언이 잡혀야 함
+curl -s localhost:8891/api/config      # paper_only: true
+```

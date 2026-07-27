@@ -34,6 +34,7 @@ from .config import Settings, get_settings
 from .data.loader import DataLoader
 from .db import Database
 from .events import EventBus
+from .seed import seed_default_champion
 from .orchestrator import CycleInProgressError, Orchestrator
 from .ws import WsManager
 
@@ -160,6 +161,9 @@ def create_app(
             "UPDATE cycles SET status = 'aborted', finished_at = datetime('now') "
             "WHERE status = 'running'"
         )
+        # 첫 실행이면 번들된 기본 챔피언을 주입 (모의거래 전용 빌드 한정).
+        # 실거래(paper_only=False)에서는 함수가 즉시 반환하며 쓰기가 없다.
+        seed_default_champion(db, s)
         bus = EventBus(db)
         loader = DataLoader(db, settings=s)
         if s.trading_mode == "live":

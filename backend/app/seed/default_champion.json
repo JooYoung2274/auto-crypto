@@ -1,0 +1,155 @@
+{
+  "version": 1,
+  "template": "box_range",
+  "params": {
+    "pivot_k": 3,
+    "entry_q": 0.15,
+    "stop_buf": 0.08566013176900648,
+    "tp1_frac": 0.35679945873783997,
+    "leverage": 3
+  },
+  "source": "2026-07-22 연구 사이클에서 선정된 챔피언 (15m 실행TF)",
+  "note": "설치 직후 바로 모의거래를 돌려볼 수 있게 번들된 기본 전략입니다. 아래 지표는 과거 데이터 백테스트 결과이며 미래 수익을 보장하지 않습니다. '전략 연구'를 실행하면 더 나은 챔피언으로 자동 교체됩니다.",
+  "backtests": [
+    {
+      "symbol": "BTCUSDT",
+      "metrics": {
+        "trade_count": 15,
+        "win_rate": 0.3333333333333333,
+        "profit_factor": 1.0252108808863658,
+        "sharpe": -0.47309916088485,
+        "mdd": 0.05793317488750993,
+        "total_return": -0.00648852938749494,
+        "cagr": -0.105063803021175,
+        "avg_holding_hours": 24.45,
+        "funding_paid": -4.639494448795387,
+        "fee_paid": 29.5505818563447,
+        "liquidation_count": 0,
+        "low_confidence": false,
+        "symbol": "BTCUSDT",
+        "timeframe": "15m",
+        "years": 0.06172945205479452
+      }
+    },
+    {
+      "symbol": "ETHUSDT",
+      "metrics": {
+        "trade_count": 11,
+        "win_rate": 0.45454545454545453,
+        "profit_factor": 0.8400846153938333,
+        "sharpe": -1.633146931881321,
+        "mdd": 0.07552825620297354,
+        "total_return": -0.029521532878748674,
+        "cagr": -0.4780196451346366,
+        "avg_holding_hours": 29.863636363636363,
+        "funding_paid": -2.6636204888856736,
+        "fee_paid": 20.822816565020915,
+        "liquidation_count": 0,
+        "low_confidence": false,
+        "symbol": "ETHUSDT",
+        "timeframe": "15m",
+        "years": 0.06172945205479452
+      }
+    },
+    {
+      "symbol": "SOLUSDT",
+      "metrics": {
+        "trade_count": 7,
+        "win_rate": 0.42857142857142855,
+        "profit_factor": 1.0678647647290211,
+        "sharpe": 0.26444567530051893,
+        "mdd": 0.10719113448685746,
+        "total_return": 0.00541439827936062,
+        "cagr": 0.08767121798003517,
+        "avg_holding_hours": 38.67857142857143,
+        "funding_paid": -1.8846051726824709,
+        "fee_paid": 13.178086218657583,
+        "liquidation_count": 0,
+        "low_confidence": true,
+        "symbol": "SOLUSDT",
+        "timeframe": "15m",
+        "years": 0.06172945205479452
+      }
+    },
+    {
+      "symbol": "XRPUSDT",
+      "metrics": {
+        "trade_count": 7,
+        "win_rate": 0.42857142857142855,
+        "profit_factor": 1.6025211374540678,
+        "sharpe": 0.2631911865678723,
+        "mdd": 0.041965902219442186,
+        "total_return": 0.0022132824851550333,
+        "cagr": 0.035837993659811634,
+        "avg_holding_hours": 11.714285714285714,
+        "funding_paid": -0.6032658885322386,
+        "fee_paid": 11.45090171941057,
+        "liquidation_count": 0,
+        "low_confidence": true,
+        "symbol": "XRPUSDT",
+        "timeframe": "15m",
+        "years": 0.06172945205479452
+      }
+    },
+    {
+      "symbol": "DOGEUSDT",
+      "metrics": {
+        "trade_count": 8,
+        "win_rate": 0.625,
+        "profit_factor": 3.7326088501315233,
+        "sharpe": 5.232961475404574,
+        "mdd": 0.0405348141676134,
+        "total_return": 0.06982982345029073,
+        "cagr": 1.1307010229658907,
+        "avg_holding_hours": 19.3125,
+        "funding_paid": -2.25195844242594,
+        "fee_paid": 11.167774305871601,
+        "liquidation_count": 0,
+        "low_confidence": true,
+        "symbol": "DOGEUSDT",
+        "timeframe": "15m",
+        "years": 0.06172945205479452
+      }
+    },
+    {
+      "symbol": "ADAUSDT",
+      "metrics": {
+        "trade_count": 4,
+        "win_rate": 0.5,
+        "profit_factor": 2.12865449004045,
+        "sharpe": 1.561339079322867,
+        "mdd": 0.02698626877301935,
+        "total_return": 0.009688835162802853,
+        "cagr": 0.22648217752142225,
+        "avg_holding_hours": 16.375,
+        "funding_paid": -0.4045659599926945,
+        "fee_paid": 6.198077555700301,
+        "liquidation_count": 0,
+        "low_confidence": true,
+        "symbol": "ADAUSDT",
+        "timeframe": "15m",
+        "years": 0.04275114155251142
+      }
+    },
+    {
+      "symbol": "LTCUSDT",
+      "metrics": {
+        "trade_count": 7,
+        "win_rate": 0.5714285714285714,
+        "profit_factor": 3.0204249444209608,
+        "sharpe": 5.2425244676181615,
+        "mdd": 0.03258490841497652,
+        "total_return": 0.0608868506037056,
+        "cagr": 1.4232656738851528,
+        "avg_holding_hours": 27.678571428571427,
+        "funding_paid": -2.004024623963407,
+        "fee_paid": 10.461960106023655,
+        "liquidation_count": 0,
+        "low_confidence": true,
+        "symbol": "LTCUSDT",
+        "timeframe": "15m",
+        "years": 0.04275114155251142
+      }
+    }
+  ]
+}
