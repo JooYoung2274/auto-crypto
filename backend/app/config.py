@@ -11,6 +11,7 @@ from __future__ import annotations
 from functools import lru_cache
 from typing import Literal
 
+from pydantic import model_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 
@@ -119,6 +120,21 @@ class Settings(BaseSettings):
     llm_effort: Literal["low", "medium", "high", "xhigh", "max"] = "low"
     llm_max_tokens: int = 1500
     llm_timeout_seconds: float = 45.0
+
+
+    @model_validator(mode="after")
+    def _enforce_paper_only(self) -> "Settings":
+        """모의거래 전용 빌드는 어떤 경로로도 live로 기동할 수 없다.
+
+        ``paper_only``는 원래 전환 API(/api/trading-mode)만 막았다. 하지만
+        기동 시 ``trading_mode``는 검사하지 않아서, 환경에 이미
+        ``CA_TRADING_MODE=live``가 있으면 런처의 ``setdefault``가 이를
+        덮어쓰지 못하고 데스크탑 앱이 실거래로 떠버린다. 여기서 강제로
+        내려 그 경로를 닫는다.
+        """
+        if self.paper_only and self.trading_mode != "paper":
+            object.__setattr__(self, "trading_mode", "paper")
+        return self
 
 
 @lru_cache

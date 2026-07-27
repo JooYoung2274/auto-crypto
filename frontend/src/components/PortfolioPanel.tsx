@@ -78,18 +78,16 @@ export function PortfolioPanel({ version = 0 }: Props) {
           <span className={`metric-value ${pnlClass(pf.unrealized_pnl)}`}>{fmtSignedUsdt(pf.unrealized_pnl)}</span>
         </div>
         <div className="metric-tile">
-          <span className="metric-label">
-            매매 가용 자금
-            {typeof pf.seed === "number" && (
-              <span className="metric-sub"> 시드 {fmtUsdt(pf.seed)}</span>
-            )}
-          </span>
+          <span className="metric-label">매매 가용 자금</span>
           <span
             className="metric-value"
             title="복리 금지 — 매매에는 min(지갑, 시드)만 사용합니다. 초과 수익은 매매에 재투입되지 않고 시드로 고정됩니다"
           >
             {fmtUsdt(pf.trading_capital ?? pf.seed ?? 0)}
           </span>
+          {typeof pf.seed === "number" && (
+            <span className="metric-sub">시드 {fmtUsdt(pf.seed)}</span>
+          )}
         </div>
         <div className="metric-tile">
           <span className="metric-label">누적 출금 수익</span>
@@ -101,21 +99,18 @@ export function PortfolioPanel({ version = 0 }: Props) {
           </span>
         </div>
         <div className="metric-tile">
-          <span className="metric-label">
-            누적 실현 손익
-            {typeof pf.closed_trades === "number" && pf.closed_trades > 0 && (
-              <span className="metric-sub">
-                {" "}
-                {pf.win_trades}승 {pf.closed_trades - (pf.win_trades ?? 0)}패
-              </span>
-            )}
-          </span>
+          <span className="metric-label">누적 실현 손익</span>
           <span
             className={`metric-value ${pnlClass(pf.realized_pnl_cum ?? 0)}`}
             title="종결된 모든 거래(익절·손절·청산)의 순손익 합 — 매매로 번/잃은 금액"
           >
             {fmtSignedUsdt(pf.realized_pnl_cum ?? 0)}
           </span>
+          {typeof pf.closed_trades === "number" && pf.closed_trades > 0 && (
+            <span className="metric-sub">
+              {pf.win_trades}승 {pf.closed_trades - (pf.win_trades ?? 0)}패
+            </span>
+          )}
         </div>
       </div>
       {chartData.length > 0 && <EquityChart data={chartData} color="#52a9ff" />}

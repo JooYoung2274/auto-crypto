@@ -538,7 +538,13 @@ td.rank {
   border: 1px solid #3a3550;
   border-radius: 2px;
   background: #242134;
-  min-width: 96px;
+  min-width: 116px;
+}
+
+/* 보조 줄은 타일 바닥에 붙여, 있는 타일과 없는 타일의 값 위치를 맞춘다. */
+.metric-sub {
+  margin-top: auto;
+  padding-top: 2px;
 }
 
 .metric-label {
@@ -1137,10 +1143,14 @@ td.rank {
 }
 
 /* 타일 부제 (누적 실현 손익 승/패 카운트) */
+/* 값 아래 보조 설명 줄. 제목 줄에 인라인으로 붙이면 해당 타일만 넓어져
+   행 정렬이 무너지므로 항상 독립된 줄로 둔다. */
 .metric-sub {
-  font-size: 0.72rem;
+  font-family: ui-monospace, monospace;
+  font-size: 10px;
   font-weight: 400;
-  opacity: 0.65;
+  color: #6f6a85;
+  letter-spacing: 0.3px;
 }
 
 /* ------------------------------------------------------- 첫 실행 안내 (온보딩) */
