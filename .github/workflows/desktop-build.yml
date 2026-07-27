@@ -1,0 +1,169 @@
+name: 데스크탑 앱 빌드
+
+# Windows PC 없이 .exe를 만들기 위한 워크플로.
+# PyInstaller는 크로스 컴파일이 안 되므로 각 OS 러너에서 각자 빌드한다.
+#
+# 실행 방법: GitHub → Actions → "데스크탑 앱 빌드" → Run workflow
+# 결과물: 해당 실행 페이지 하단 Artifacts에서 zip 다운로드
+#
+# macOS 서명·공증은 아래 Secrets가 모두 있을 때만 동작하고, 없으면
+# 서명 없이 빌드만 한다 (Settings → Secrets and variables → Actions):
+#   MACOS_CERT_P12          Developer ID Application 인증서 .p12 를 base64 인코딩
+#   MACOS_CERT_PASSWORD     .p12 내보낼 때 지정한 암호
+#   MACOS_SIGN_IDENTITY     예: "Developer ID Application: Hong Gildong (ABCDE12345)"
+#   APPLE_ID                Apple 개발자 계정 이메일
+#   APPLE_TEAM_ID           10자리 팀 ID
+#   APPLE_APP_PASSWORD      appleid.apple.com 에서 만든 앱 암호 (계정 암호 아님)
+
+on:
+  workflow_dispatch:
+  push:
+    tags: ["v*"]
+
+permissions:
+  contents: read
+
+jobs:
+  build:
+    name: ${{ matrix.label }}
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false          # 한쪽이 깨져도 다른 쪽 산출물은 받는다
+      matrix:
+        include:
+          - os: windows-latest
+            label: Windows
+            artifact: CoinAgentsOffice-windows
+          - os: macos-latest
+            label: macOS
+            artifact: CoinAgentsOffice-macos
+    env:
+      # 시크릿을 잡 레벨 env로 올려야 step의 if 에서 존재 여부를 검사할 수 있다.
+      MACOS_CERT_P12: ${{ secrets.MACOS_CERT_P12 }}
+      MACOS_CERT_PASSWORD: ${{ secrets.MACOS_CERT_PASSWORD }}
+      MACOS_SIGN_IDENTITY: ${{ secrets.MACOS_SIGN_IDENTITY }}
+      APPLE_ID: ${{ secrets.APPLE_ID }}
+      APPLE_TEAM_ID: ${{ secrets.APPLE_TEAM_ID }}
+      APPLE_APP_PASSWORD: ${{ secrets.APPLE_APP_PASSWORD }}
+
+    steps:
+      - uses: actions/checkout@v4
+
+      # ── 프론트엔드 ──────────────────────────────────────────────────
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+          cache: npm
+          cache-dependency-path: frontend/package-lock.json
+
+      - name: 프론트엔드 빌드
+        working-directory: frontend
+        run: |
+          npm ci
+          npm run build
+
+      # ── 백엔드 ──────────────────────────────────────────────────────
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: pip
+
+      - name: 파이썬 의존성 설치
+        shell: bash
+        run: |
+          python -m pip install --upgrade pip
+          pip install -r backend/requirements.txt
+          pip install -r desktop/requirements.txt
+
+      # 깨진 엔진을 패키징해서 배포하는 사고를 막는 게이트.
+      - name: 백엔드 테스트
+        working-directory: backend
+        run: python -m pytest -q
+
+      - name: 프론트엔드 테스트
+        working-directory: frontend
+        run: npx vitest run
+
+      # ── 패키징 ──────────────────────────────────────────────────────
+      - name: PyInstaller 패키징
+        working-directory: desktop
+        run: python -m PyInstaller --noconfirm coinagent.spec
+
+      # ── macOS 서명 · 공증 (시크릿이 있을 때만) ──────────────────────
+      - name: macOS 코드 서명
+        if: runner.os == 'macOS' && env.MACOS_CERT_P12 != ''
+        shell: bash
+        run: |
+          set -euo pipefail
+          KEYCHAIN_PW="$(openssl rand -base64 24)"
+          echo "$MACOS_CERT_P12" | base64 --decode > /tmp/cert.p12
+          security create-keychain -p "$KEYCHAIN_PW" build.keychain
+          security default-keychain -s build.keychain
+          security unlock-keychain -p "$KEYCHAIN_PW" build.keychain
+          security set-keychain-settings -t 3600 -u build.keychain
+          security import /tmp/cert.p12 -k build.keychain \
+            -P "$MACOS_CERT_PASSWORD" -T /usr/bin/codesign
+          security set-key-partition-list -S apple-tool:,apple:,codesign: \
+            -s -k "$KEYCHAIN_PW" build.keychain
+          rm -f /tmp/cert.p12
+
+          APP="desktop/dist/CoinAgentsOffice.app"
+          # Apple 권장: 안쪽 바이너리부터 서명하고 번들을 마지막에 서명한다
+          # (--deep 한 방은 중첩 서명을 자주 놓친다).
+          find "$APP" -type f \( -name "*.dylib" -o -name "*.so" \) -print0 |
+            xargs -0 -I{} codesign --force --timestamp --options runtime \
+              --sign "$MACOS_SIGN_IDENTITY" {}
+          codesign --force --timestamp --options runtime \
+            --entitlements desktop/entitlements.plist \
+            --sign "$MACOS_SIGN_IDENTITY" "$APP"
+          codesign --verify --deep --strict --verbose=2 "$APP"
+
+      - name: macOS 공증 (notarize)
+        if: runner.os == 'macOS' && env.MACOS_CERT_P12 != '' && env.APPLE_ID != ''
+        shell: bash
+        run: |
+          set -euo pipefail
+          APP="desktop/dist/CoinAgentsOffice.app"
+          ditto -c -k --keepParent "$APP" /tmp/notarize.zip
+          xcrun notarytool submit /tmp/notarize.zip \
+            --apple-id "$APPLE_ID" \
+            --team-id "$APPLE_TEAM_ID" \
+            --password "$APPLE_APP_PASSWORD" \
+            --wait
+          # 스테이플: 공증 티켓을 앱에 박아 오프라인에서도 Gatekeeper를 통과.
+          xcrun stapler staple "$APP"
+          xcrun stapler validate "$APP"
+
+      # ── 압축 ────────────────────────────────────────────────────────
+      - name: macOS 압축
+        if: runner.os == 'macOS'
+        shell: bash
+        # ditto 를 쓰는 이유: zip 은 .app 의 심볼릭 링크·확장 속성을 깨뜨려
+        # 서명이 무효가 된다.
+        run: ditto -c -k --keepParent desktop/dist/CoinAgentsOffice.app "${{ matrix.artifact }}.zip"
+
+      - name: Windows 압축
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = "Stop"
+          # 압축 안에 안내문을 같이 넣는다 — SmartScreen 경고를 만난 구매자가
+          # 볼 수 있는 유일한 문서다.
+          Copy-Item desktop/win-notice.txt desktop/dist/CoinAgentsOffice/사용안내.txt
+          Compress-Archive -Path desktop/dist/CoinAgentsOffice/* -DestinationPath "${{ matrix.artifact }}.zip"
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: ${{ matrix.artifact }}
+          path: ${{ matrix.artifact }}.zip
+          retention-days: 30
+
+      # 실패 원인을 남기기 위해 빌드 로그도 함께 올린다.
+      - name: 빌드 로그 업로드 (실패 시)
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: build-log-${{ matrix.label }}
+          path: desktop/build/**/*.txt
+          retention-days: 7
+          if-no-files-found: ignore

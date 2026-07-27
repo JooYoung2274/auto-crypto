@@ -2,8 +2,6 @@ fastapi
 uvicorn
 pandas
 numpy
-finance-datareader
-yfinance
 httpx
 pydantic-settings
 pytest

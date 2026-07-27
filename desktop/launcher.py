@@ -9,11 +9,13 @@ FastAPI 백엔드를 백그라운드 스레드에서 띄우고, 빌드된 React 
 """
 from __future__ import annotations
 
+import logging
 import os
 import socket
 import sys
 import threading
 import time
+import traceback
 from pathlib import Path
 
 
@@ -28,6 +30,21 @@ def _app_data_dir() -> Path:
     d = base / "CoinAgentsOffice"
     d.mkdir(parents=True, exist_ok=True)
     return d
+
+
+def _setup_logging(data_dir: Path) -> Path:
+    """실행 로그를 파일로 남긴다.
+
+    GUI 빌드(`console=False`)는 stdout/stderr가 어디에도 표시되지 않는다.
+    로그 파일이 없으면 "안 켜져요" 문의에 물어볼 근거가 아무것도 없다.
+    """
+    log_path = data_dir / "coinagent.log"
+    logging.basicConfig(
+        level=logging.INFO,
+        format="%(asctime)s %(levelname)s %(name)s: %(message)s",
+        handlers=[logging.FileHandler(log_path, encoding="utf-8")],
+    )
+    return log_path
 
 
 def _free_port() -> int:
@@ -49,6 +66,8 @@ def _wait_until_up(port: int, timeout: float = 30.0) -> bool:
 
 def main() -> None:
     data_dir = _app_data_dir()
+    log_path = _setup_logging(data_dir)
+    logging.info("Coin Agents Office 시작 — 데이터 폴더 %s", data_dir)
     # 모의거래 전용 + 데이터 경로를 백엔드 Settings에 환경변수로 주입.
     os.environ.setdefault("CA_PAPER_ONLY", "true")
     os.environ.setdefault("CA_TRADING_MODE", "paper")
@@ -100,8 +119,28 @@ def main() -> None:
         server.should_exit = True
 
     window.events.closed += _shutdown
+    logging.info("창 열기 — http://127.0.0.1:%d (로그: %s)", port, log_path)
     webview.start()
 
 
+def _crash_report(exc: BaseException) -> Path:
+    """치명적 오류를 앱데이터 폴더에 남긴다 (콘솔이 없으므로 유일한 단서)."""
+    path = _app_data_dir() / "coinagent-error.log"
+    try:
+        with path.open("a", encoding="utf-8") as f:
+            f.write(f"\n===== {time.strftime('%Y-%m-%d %H:%M:%S')} =====\n")
+            traceback.print_exception(type(exc), exc, exc.__traceback__, file=f)
+    except OSError:
+        pass
+    return path
+
+
 if __name__ == "__main__":
-    main()
+    try:
+        main()
+    except BaseException as exc:  # noqa: BLE001 — 종료 직전 마지막 기록
+        report = _crash_report(exc)
+        # 콘솔이 있는 환경(개발·헤드리스)에서는 그대로 보여준다.
+        traceback.print_exc()
+        print(f"\n오류 기록: {report}", file=sys.stderr)
+        raise SystemExit(1)

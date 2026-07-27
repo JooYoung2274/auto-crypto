@@ -1,0 +1,25 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!--
+  macOS 하드닝 런타임(codesign --options runtime) 엔타이틀먼트.
+
+  PyInstaller로 묶인 Python 앱은 인터프리터가 런타임에 코드를 생성하고
+  번들된 .so/.dylib를 로드한다. 아래 항목이 없으면 서명·공증은 통과해도
+  실행 시점에 곧바로 죽는다.
+-->
+<plist version="1.0">
+<dict>
+    <!-- Python 인터프리터의 런타임 코드 생성 -->
+    <key>com.apple.security.cs.allow-jit</key>
+    <true/>
+    <key>com.apple.security.cs.allow-unsigned-executable-memory</key>
+    <true/>
+    <!-- 번들에 포함된 확장 모듈(.so) 로드 -->
+    <key>com.apple.security.cs.disable-library-validation</key>
+    <true/>
+    <key>com.apple.security.cs.allow-dyld-environment-variables</key>
+    <true/>
+    <!-- Binance 공개 시세 조회 (모의거래는 아웃바운드만 사용) -->
+    <key>com.apple.security.network.client</key>
+    <true/>
+</dict>
+</plist>

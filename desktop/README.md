@@ -12,7 +12,19 @@
   - Windows: `%APPDATA%\CoinAgentsOffice\`
   - Linux: `~/.local/share/CoinAgentsOffice/`
 
-## 빌드 (개발자/배포자용)
+## 빌드 — GitHub Actions (권장)
+
+**Windows PC 없이 `.exe`를 만드는 방법입니다.** PyInstaller는 크로스 컴파일이
+불가능하므로 각 OS 러너에서 각자 빌드합니다.
+
+GitHub 저장소 → **Actions** → **데스크탑 앱 빌드** → **Run workflow**
+
+10~15분 뒤 실행 페이지 하단 Artifacts에서 Windows·macOS 산출물을 받습니다.
+백엔드·프론트엔드 테스트가 먼저 돌고 실패하면 패키징하지 않습니다.
+
+macOS 서명·공증 설정과 Windows SmartScreen 대응은 **[RELEASE.md](RELEASE.md)** 참고.
+
+## 빌드 — 로컬 (현재 OS만)
 
 프론트엔드 빌드 → 의존성 설치 → PyInstaller 패키징을 한 번에:
 
@@ -50,8 +62,9 @@ cd ../desktop && ../backend/.venv/bin/python -m PyInstaller --noconfirm coinagen
 
 ## 배포 시 주의
 
-- **코드 서명/공증**: macOS는 서명·공증(notarization) 없이 배포하면 Gatekeeper 경고가 뜹니다. 정식 배포엔 Apple Developer 계정 + `codesign`/`notarytool`이 필요합니다. Windows도 SmartScreen 경고를 없애려면 코드 서명 인증서가 필요합니다.
+- **코드 서명/공증**: 절차와 GitHub Secrets 설정은 [RELEASE.md](RELEASE.md)에 정리했습니다. macOS는 Apple Developer 계정이 있으면 워크플로가 서명·공증까지 자동 처리하고, Windows는 인증서가 없으면 SmartScreen 경고가 남습니다 (압축 안 `사용안내.txt`가 통과 방법을 설명).
 - **면책**: 투자 판단·결과에 대한 책임 고지를 반드시 포함하세요. 이 앱은 교육·연구용 시뮬레이터입니다.
+- **문제 진단**: GUI 빌드는 콘솔이 없으므로 앱데이터 폴더의 `coinagent.log` / `coinagent-error.log`가 유일한 단서입니다. 문의 시 이 파일을 받으세요.
 - **개발용 직접 실행** (패키징 없이 테스트):
   ```bash
   cd desktop && ../backend/.venv/bin/python launcher.py
