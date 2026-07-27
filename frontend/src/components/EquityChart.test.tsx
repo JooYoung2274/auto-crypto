@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest"
-import { buildChartGeometry, formatCompact, niceTicks, shortDate } from "./EquityChart"
+import { buildChartGeometry, formatAxisValue, formatCompact, niceTicks, shortDate } from "./EquityChart"
 import { normalizeEquityCurve } from "../lib/api"
 import type { EquityPoint } from "../lib/types"
 
@@ -149,5 +149,34 @@ describe("buildChartGeometry", () => {
     const geom = buildChartGeometry(data, 720, 220, PAD)!
     expect(geom.xTicks[0].label).toBe("24.01.01")
     expect(geom.xTicks[geom.xTicks.length - 1].label).toBe("24.12.31")
+  })
+})
+
+describe("formatAxisValue", () => {
+  it("keeps narrow ranges distinguishable instead of collapsing to one label", () => {
+    // 시드 1,900 근처 자산 곡선: formatCompact 는 셋 다 "2.1k" 로 뭉갠다.
+    const step = 5
+    const labels = [2095, 2100, 2105].map((v) => formatAxisValue(v, step))
+    expect(new Set(labels).size).toBe(3)
+    expect(labels).toEqual(["2,095", "2,100", "2,105"])
+  })
+
+  it("still abbreviates when the step is coarse enough", () => {
+    expect(formatAxisValue(12000, 2000)).toBe("12k")
+    expect(formatAxisValue(2_500_000, 500_000)).toBe("2.5M")
+  })
+
+  it("keeps small values readable", () => {
+    expect(formatAxisValue(0.5, 0.25)).toBe("0.5")
+    expect(formatAxisValue(120, 20)).toBe("120")
+  })
+
+  it("never renders duplicate labels for the ticks niceTicks produces", () => {
+    for (const [lo, hi] of [[2090, 2110], [0.9, 1.35], [9800, 10400], [1e6, 1.2e6]]) {
+      const ticks = niceTicks(lo, hi, 4)
+      const step = ticks.length > 1 ? ticks[1] - ticks[0] : 0
+      const labels = ticks.map((v) => formatAxisValue(v, step))
+      expect(new Set(labels).size).toBe(labels.length)
+    }
   })
 })

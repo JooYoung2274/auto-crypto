@@ -70,6 +70,27 @@ export function formatCompact(v: number): string {
 }
 
 /**
+ * Y축 눈금 라벨. 눈금 간격(``step``)을 함께 받아 **축약이 눈금을 뭉개면
+ * 축약하지 않는다.**
+ *
+ * 시드 1,900 USDT 근처처럼 값이 크고 변동 폭이 좁으면 formatCompact는
+ * 2,103 / 2,098 / 2,094 를 모두 "2.1k"로 만들어 축 라벨 세 개가 같은 글자가
+ * 된다. 눈금 간격이 단위의 1/10 미만이면 축약 대신 천단위 구분 기호를 쓴다.
+ */
+export function formatAxisValue(v: number, step: number): string {
+  const abs = Math.abs(v)
+  const scale = abs >= 1e6 ? 1e6 : abs >= 1e3 ? 1e3 : 1
+  if (scale === 1 || (step > 0 && step < scale / 10)) {
+    const decimals = step > 0 && step < 1 ? Math.min(2, Math.ceil(-Math.log10(step))) : 0
+    return v.toLocaleString("en-US", {
+      minimumFractionDigits: decimals,
+      maximumFractionDigits: decimals,
+    })
+  }
+  return formatCompact(v)
+}
+
+/**
  * 24/7 크립토 축 라벨은 풀 타임스탬프가 필요하다:
  * "2026-07-14T09:30:00" → "07.14 09:30", 시각이 없으면 "26.07.14".
  */
@@ -121,10 +142,12 @@ export function buildChartGeometry(
   const last = points[points.length - 1]
   const areaPath = `${linePath} L${last.x},${baseY} L${first.x},${baseY} Z`
 
-  const yTicks: YTick[] = niceTicks(lo, hi, 4).map((v) => ({
+  const tickValues = niceTicks(lo, hi, 4)
+  const tickStep = tickValues.length > 1 ? tickValues[1] - tickValues[0] : 0
+  const yTicks: YTick[] = tickValues.map((v) => ({
     y: round2(yAt(v)),
     value: v,
-    label: formatCompact(v),
+    label: formatAxisValue(v, tickStep),
   }))
 
   const tickCount = Math.min(4, n)

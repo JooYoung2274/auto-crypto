@@ -19,6 +19,7 @@ import type { AgentMeta } from "./office/engine"
 import { api, ApiError } from "./lib/api"
 import { connectWs, defaultWsUrl } from "./lib/ws"
 import type {
+  AppConfig,
   CycleInfo,
   CycleKind,
   CycleProgressEvent,
@@ -113,10 +114,14 @@ export default function App() {
   const [wsGeneration, setWsGeneration] = useState(0)
   const [lbVersion, setLbVersion] = useState(0)
   const [pfVersion, setPfVersion] = useState(0)
-  const [tab, setTab] = useState<TabId>("team")
+  // 첫 화면은 포트폴리오 — 앱을 켰을 때 자산·손익이 먼저 보여야 한다
+  // (팀 탭은 대기 중 카드만 늘어서 첫인상이 비어 보였다).
+  const [tab, setTab] = useState<TabId>("portfolio")
   const [team, dispatchTeam] = useReducer(reduceTeamEvent, emptyTeamState)
   const [busy, setBusy] = useState(false)
   const [paperOnly, setPaperOnly] = useState(false)
+  // 팀 탭이 '다음 판단 시각'을 계산하는 데 쓴다 (실행 TF·봉마감 트리거·자동 사이클).
+  const [config, setConfig] = useState<AppConfig | null>(null)
   const [notice, setNotice] = useState<string | null>(null)
   // 첫 실행 안내 — 모의거래 전용 빌드에서 아직 닫지 않았을 때만 자동 노출.
   const [showGuide, setShowGuide] = useState(false)
@@ -182,7 +187,8 @@ export default function App() {
     api
       .getConfig()
       .then((c) => {
-        const isPaperOnly = Boolean((c as { paper_only?: boolean }).paper_only)
+        setConfig(c)
+        const isPaperOnly = Boolean(c.paper_only)
         setPaperOnly(isPaperOnly)
         let stored: string | null = null
         try {
@@ -440,7 +446,7 @@ export default function App() {
           ))}
         </nav>
         <div className="tab-body">
-          {tab === "team" && <TeamPanel agents={AGENTS} team={team} />}
+          {tab === "team" && <TeamPanel agents={AGENTS} team={team} config={config} />}
           {tab === "logs" && <LogPanel key={wsGeneration} liveLogs={liveLogs} agents={AGENTS} offline={demo} />}
           {tab === "leaderboard" && <Leaderboard version={lbVersion} />}
           {tab === "champion" && <ChampionPanel version={lbVersion} />}

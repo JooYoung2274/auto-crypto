@@ -312,9 +312,13 @@ export interface TradingModeResponse {
 /** GET/PUT /api/config (trading_mode is read-only on the server) */
 export interface AppConfig {
   trading_mode: TradingMode
+  /** 모의거래 전용 빌드(데스크탑 앱) 여부 — 실거래 전환 UI를 숨긴다. */
+  paper_only?: boolean
   universe: string[]
   timeframes?: string[]
   execution_timeframe?: string
+  /** 실행 TF 봉마감마다 trade 사이클을 자동 트리거하는지. */
+  bar_close_trade_enabled?: boolean
   auto_cycle_minutes: number
   max_mdd: number
   min_trades: number
