@@ -11,6 +11,7 @@ import pytest
 
 from app.risk.engine import MarketState, RiskEngine
 from app.risk.plan import TradePlan
+from app.strategies.base import build_plan
 from app.strategies import (
     TEMPLATES,
     StrategySpec,
@@ -569,3 +570,96 @@ class TestVpvrAccum:
         assert (before is None) == (after is None)
         if before is not None:
             assert before.stop.price == after.stop.price
+
+
+# -- box_range: 박스 이탈 상태에서는 진입하지 않는다 -------------------------------
+def box_frames_at(q: float) -> dict[str, pd.DataFrame]:
+    """사인파 박스(94.95~105.05)를 만든 뒤 마지막을 박스 대비 위치 ``q``로 이동.
+
+    q < 0 이면 하단 이탈, q > 1 이면 상단 이탈이다.
+    """
+    period = 480
+    n = 9 * period
+    t = np.arange(n)
+    close = 100.0 + 5.0 * np.sin(2.0 * np.pi * t / period)
+    bottom, height = 94.953, 10.099
+    tail = np.linspace(close[-1], bottom + q * height, 2 * 96)
+    return frames_from_close(np.concatenate([close, tail]))
+
+
+#: 이탈 진입이 **정적 리스크 게이트까지 통과**하는 조합. stop_buf가 클수록
+#: 손절선이 멀어져 '최소 손절 거리' 게이트에 걸리지 않는다. 그리드 상한이
+#: 0.10이므로 아래 값들은 목표 탐색이 실제로 뽑을 수 있는 파라미터다.
+BREAKOUT_PARAMS = {
+    "pivot_k": 3, "entry_q": 0.25, "stop_buf": 0.10, "tp1_frac": 0.35, "leverage": 4,
+}
+
+
+class TestBoxBreakoutGuard:
+    """진입 근거가 "박스 하단 이탈 = 시나리오 붕괴 손절"인데 진입 시점에 이미
+    이탈해 있으면 시나리오가 성립하지 않는다.
+
+    하위 게이트(기하·최소 손절 거리)가 일부는 걸러내지만 전부는 아니다 —
+    stop_buf가 크면 손절선이 멀어져 통과한다. 그 구간을 여기서 막는다."""
+
+    @pytest.mark.parametrize("q", [-0.01, -0.03])
+    def test_no_long_below_the_box(self, q):
+        assert make_plan("box_range", BREAKOUT_PARAMS, box_frames_at(q), ALT, "long_alt") is None
+
+    @pytest.mark.parametrize("q", [1.01, 1.03])
+    def test_no_short_above_the_box(self, q):
+        assert make_plan("box_range", BREAKOUT_PARAMS, box_frames_at(q), ALT, "short") is None
+
+    def test_breakout_entry_would_otherwise_pass_every_risk_gate(self, settings):
+        """가드가 없으면 리스크 게이트가 못 막는다는 증거 — 가드의 존재 이유.
+
+        템플릿을 직접 호출해 가드를 우회한 뒤(=가드 이전 동작 재현) 정적
+        게이트에 넣으면 승인된다. 손익비가 6:1을 넘는 것은 진입가가 이미
+        박스 밖이라 생긴 착시다."""
+        from app.risk.engine import MarketState, RiskEngine
+        from app.strategies import box_range
+        from app.strategies.base import mark_price
+
+        frames = box_frames_at(-0.01)
+        mark = mark_price(frames)
+        # 가드 이전 로직: 박스 하단 근처이므로 롱 플랜을 만든다.
+        box = _box_of(frames, BREAKOUT_PARAMS)
+        tp1 = box.bottom + BREAKOUT_PARAMS["tp1_frac"] * box.height
+        plan = build_plan(
+            symbol=ALT, side="long", mark=mark,
+            stop=box.bottom - BREAKOUT_PARAMS["stop_buf"] * box.height,
+            evidence=["박스 하단 지지", "분할 진입", "하단 이탈 = 손절"],
+            leverage=BREAKOUT_PARAMS["leverage"],
+            tps=[(tp1, 0.5), (box.midpoint, 0.5)],
+        )
+        assert plan is not None, "기하 자체는 성립한다 (하위 게이트가 못 막는 구간)"
+        state = MarketState(
+            as_of_ts=0, mark_price=mark, open_positions=0, daily_realized_pnl=0.0,
+            blackout_windows=[], open_plan_margin=0.0, wallet_balance=None,
+        )
+        assert RiskEngine._review_static(plan, settings, state).approved, (
+            "이 조합은 정적 게이트를 통과한다 — 그래서 템플릿에서 막아야 한다"
+        )
+        # 그런데 같은 시장 상태에서 템플릿은 이제 관망한다.
+        assert make_plan("box_range", BREAKOUT_PARAMS, frames, ALT, "long_alt") is None
+
+    def test_normal_box_entries_still_fire(self):
+        """가드가 정상 진입까지 막지 않는지 — 회귀 방지."""
+        assert make_plan("box_range", BOX_PARAMS, box_frames("bottom"), ALT, "long_alt") is not None
+        assert make_plan("box_range", BOX_PARAMS, box_frames("top"), ALT, "short") is not None
+
+    def test_guard_is_independent_of_the_regime(self):
+        """레짐을 열어줘도 이탈 상태면 진입하지 않는다."""
+        for regime in ("long_alt", "short"):
+            assert make_plan("box_range", BREAKOUT_PARAMS, box_frames_at(-0.01), ALT, regime) is None
+            assert make_plan("box_range", BREAKOUT_PARAMS, box_frames_at(1.01), ALT, regime) is None
+
+
+def _box_of(frames, params):
+    from app.data.indicators import build_box, swing_pivots
+    from app.strategies.box_range import RECENT_PIVOTS
+
+    return build_box(
+        swing_pivots(frames["4h"], k=int(params["pivot_k"])),
+        as_of=None, recent=RECENT_PIVOTS,
+    )

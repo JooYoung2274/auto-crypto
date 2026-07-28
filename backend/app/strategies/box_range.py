@@ -45,6 +45,12 @@ def plan(
         return None
 
     q = (mark - box.bottom) / box.height
+    # 박스 밖이면 시나리오가 **진입 전에 이미** 깨진 상태다. q < 0(하단 이탈)에도
+    # q <= entry_q가 성립해 '하단 지지 롱'으로 들어가던 버그를 막는다 — 근거에
+    # "박스 하단 이탈 = 시나리오 붕괴 손절"이라고 적어놓고 그 조건이 성립한
+    # 종목을 사는 셈이었다. 상단(q > 1)도 대칭으로 차단한다.
+    if not 0.0 <= q <= 1.0:
+        return None
     if q <= entry_q:
         # 박스 하단 지지 롱 — 최종 TP는 미드포인트.
         tp1 = box.bottom + tp1_frac * box.height
