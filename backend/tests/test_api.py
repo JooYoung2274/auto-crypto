@@ -812,3 +812,92 @@ def test_paper_only_build_blocks_live_switch(tmp_path, monkeypatch):
         assert r.status_code == 400
         assert "모의거래 전용" in r.json()["detail"]
         assert c.get("/api/status").json()["trading_mode"] == "paper"
+
+
+# -- 매매일지 --------------------------------------------------------------------
+def _seed_closed_trade(db, plan_id_out=None):
+    """익절로 종결된 숏 거래 1건 (일지 API 테스트용)."""
+    payload = {
+        "symbol": "SOLUSDT",
+        "side": "short",
+        "evidence": ["4h 확정 피벗 박스 73.38~77.08", "박스 상단 분할 진입"],
+        "entries": [
+            {"kind": "entry", "price": 76.88, "fraction": 0.5},
+            {"kind": "entry", "price": 77.08, "fraction": 0.5},
+        ],
+        "stop": {"kind": "stop", "price": 77.40, "fraction": 1.0},
+        "tps": [{"kind": "tp", "price": 75.76, "fraction": 1.0}],
+        "leverage": 3,
+        "margin_usdt": 600.0,
+    }
+    rows = db.execute(
+        "INSERT INTO trade_plans (created_at, symbol, side, plan_json, status, "
+        "filled_fraction) VALUES (?, 'SOLUSDT', 'short', ?, 'closed', 1.0)",
+        ("2026-07-27T00:00:00+00:00", json.dumps(payload)),
+    )
+    pid = int(rows[0]["id"])
+    for i, (qty, px, ro, kind) in enumerate(
+        [(12.0, 76.88, 0, "entry"), (12.0, 77.08, 0, "entry")]
+    ):
+        db.execute(
+            "INSERT INTO paper_orders (ts, symbol, side, qty, order_type, limit_price, "
+            "filled_qty, avg_fill_price, reduce_only, leverage, plan_id, leg_kind, "
+            "leg_index, client_order_id, status) VALUES "
+            "(?, 'SOLUSDT', 'sell', ?, 'limit', ?, ?, ?, ?, 3, ?, ?, ?, ?, 'filled')",
+            ("2026-07-27T00:00:00+00:00", qty, px, qty, px, ro, pid, kind, i,
+             f"{pid}-{kind}-{i}-0"),
+        )
+    db.execute(
+        "INSERT INTO paper_orders (ts, symbol, side, qty, order_type, limit_price, "
+        "filled_qty, avg_fill_price, reduce_only, leverage, plan_id, leg_kind, "
+        "leg_index, client_order_id, status) VALUES "
+        "(?, 'SOLUSDT', 'buy', 24.0, 'limit', 75.76, 24.0, 75.76, 1, 3, ?, 'tp', 0, ?, "
+        "'filled')",
+        ("2026-07-27T01:00:00+00:00", pid, f"{pid}-tp-0-0"),
+    )
+    return pid
+
+
+def test_journal_lists_closed_trades(client):
+    pid = _seed_closed_trade(client.app.state.db)
+    rows = client.get("/api/journal").json()
+    assert [r["plan_id"] for r in rows] == [pid]
+    entry = rows[0]
+    assert entry["symbol"] == "SOLUSDT"
+    assert entry["outcome"] == "take_profit"
+    assert entry["evidence"]
+    assert len(entry["entry_legs"]) == 2
+    assert entry["pnl_usdt"] > 0
+    assert entry["note"] == ""
+
+
+def test_journal_limit(client):
+    _seed_closed_trade(client.app.state.db)
+    _seed_closed_trade(client.app.state.db)
+    assert len(client.get("/api/journal?limit=1").json()) == 1
+
+
+def test_journal_note_upsert_roundtrip(client):
+    pid = _seed_closed_trade(client.app.state.db)
+    r = client.put(f"/api/journal/{pid}/note", json={"note": "계획대로 됐다"})
+    assert r.status_code == 200
+    assert r.json()["note"] == "계획대로 됐다"
+    assert client.get("/api/journal").json()[0]["note"] == "계획대로 됐다"
+
+    client.put(f"/api/journal/{pid}/note", json={"note": "수정"})
+    assert client.get("/api/journal").json()[0]["note"] == "수정"
+
+
+def test_journal_note_unknown_plan_404(client):
+    assert client.put("/api/journal/9999/note", json={"note": "x"}).status_code == 404
+
+
+def test_journal_matches_trade_history_numbers(client):
+    """일지와 거래 내역이 같은 거래를 다른 숫자로 보여주면 안 된다."""
+    _seed_closed_trade(client.app.state.db)
+    journal = {r["plan_id"]: r for r in client.get("/api/journal").json()}
+    history = {r["plan_id"]: r for r in client.get("/api/trade-history").json()}
+    assert journal.keys() == history.keys()
+    for pid, j in journal.items():
+        assert j["pnl_usdt"] == history[pid]["pnl_usdt"]
+        assert j["avg_exit"] == history[pid]["avg_exit"]

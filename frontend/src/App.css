@@ -1246,3 +1246,165 @@ td.rank {
   opacity: 0.45;
   cursor: not-allowed;
 }
+
+/* ------------------------------------------------------------------ 매매일지 */
+
+.journal-panel {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+  padding: 12px;
+}
+
+.journal-card {
+  border: 1px solid #2b2840;
+  border-radius: 4px;
+  background: #191724;
+  padding: 14px 16px;
+}
+
+.journal-head {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  flex-wrap: wrap;
+  padding-bottom: 10px;
+  border-bottom: 1px solid #2b2840;
+}
+
+.journal-badge {
+  font-family: ui-monospace, monospace;
+  font-size: 11px;
+  font-weight: 700;
+  padding: 3px 9px;
+  border-radius: 2px;
+}
+.journal-win { background: #1d3320; color: #4cc38a; }
+.journal-loss { background: #3a1d20; color: #f2555a; }
+.journal-liq { background: #2a2436; color: #b197fc; }
+.journal-flat { background: #242134; color: #8d88a3; }
+
+.journal-symbol {
+  font-family: ui-monospace, monospace;
+  font-size: 15px;
+  font-weight: 700;
+  color: #e8e4f2;
+}
+
+.journal-lev {
+  font-family: ui-monospace, monospace;
+  font-size: 11px;
+  color: #8d88a3;
+}
+
+.journal-pnl {
+  margin-left: auto;
+  display: flex;
+  align-items: baseline;
+  gap: 8px;
+  font-family: ui-monospace, monospace;
+  font-size: 15px;
+  font-weight: 700;
+}
+.journal-ret {
+  font-size: 11px;
+  font-weight: 400;
+  color: #8d88a3;
+}
+
+.journal-when {
+  margin: 10px 0 0;
+  font-family: ui-monospace, monospace;
+  font-size: 12px;
+  color: #8d88a3;
+}
+
+.journal-section {
+  margin-top: 14px;
+}
+.journal-section h4 {
+  margin: 0 0 6px;
+  font-size: 12px;
+  color: #b7b2cc;
+  font-weight: 600;
+}
+.journal-hint {
+  font-family: ui-monospace, monospace;
+  font-size: 11px;
+  font-weight: 400;
+  color: #6f6a85;
+  margin-left: 6px;
+}
+
+.journal-evidence {
+  margin: 0;
+  padding-left: 18px;
+  font-size: 12.5px;
+  line-height: 1.65;
+  color: #b7b2cc;
+}
+.journal-evidence strong { color: #e8e4f2; }
+.journal-evidence em { color: #f5a524; font-style: normal; }
+
+/* 컬럼이 4개뿐이라 width:100% 면 '레그' 열이 화면 절반을 차지한다. */
+.journal-table {
+  font-size: 12px;
+  width: auto;
+  min-width: 420px;
+}
+.journal-table th,
+.journal-table td {
+  padding-right: 22px;
+}
+.journal-unfilled {
+  opacity: 0.5;
+}
+
+.journal-note-line {
+  margin: 8px 0 0;
+  font-size: 12.5px;
+  color: #b7b2cc;
+}
+.journal-note-line strong {
+  font-family: ui-monospace, monospace;
+  color: #e8e4f2;
+}
+
+.journal-note {
+  margin-top: 14px;
+  padding-top: 12px;
+  border-top: 1px dashed #2b2840;
+}
+.journal-note-label {
+  display: block;
+  font-size: 12px;
+  color: #b7b2cc;
+  margin-bottom: 6px;
+  font-weight: 600;
+}
+.journal-note-input {
+  width: 100%;
+  box-sizing: border-box;
+  background: #120f1e;
+  border: 1px solid #2b2840;
+  border-radius: 3px;
+  color: #e8e4f2;
+  font-family: inherit;
+  font-size: 12.5px;
+  line-height: 1.5;
+  padding: 8px 10px;
+  resize: vertical;
+}
+.journal-note-input:focus {
+  outline: none;
+  border-color: #6b63a8;
+}
+.journal-note-actions {
+  display: flex;
+  align-items: center;
+  justify-content: flex-end;
+  gap: 10px;
+  margin-top: 8px;
+}
+.journal-note-ok { font-size: 11.5px; color: #4cc38a; }
+.journal-note-err { font-size: 11.5px; color: #f2555a; }

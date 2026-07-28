@@ -15,6 +15,7 @@ import type {
   ReportSummary,
   StatusResponse,
   StrategyDetail,
+  JournalEntry,
   TradeHistoryRow,
   TradingMode,
   TradingModeResponse,
@@ -137,6 +138,17 @@ export const api = {
   /** 종결 플랜 실현 손익 내역 — 손절/익절/강제 청산 라벨 포함. */
   tradeHistory(): Promise<TradeHistoryRow[]> {
     return request("/api/trade-history")
+  },
+  /** 매매일지 — 종결 거래별 진입 근거·설계·결과 (최신순). */
+  journal(limit = 50): Promise<JournalEntry[]> {
+    return request(`/api/journal?limit=${limit}`)
+  },
+  /** 일지 메모 저장 (upsert). */
+  saveJournalNote(planId: number, note: string): Promise<{ plan_id: number; note: string }> {
+    return request(`/api/journal/${planId}/note`, {
+      method: "PUT",
+      body: JSON.stringify({ note }),
+    })
   },
   plan(id: number): Promise<PlanInfo> {
     return request(`/api/plans/${id}`)

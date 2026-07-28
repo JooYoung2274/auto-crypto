@@ -169,6 +169,11 @@ CREATE TABLE IF NOT EXISTS paper_state (
     key TEXT PRIMARY KEY,
     value TEXT NOT NULL
 );
+CREATE TABLE IF NOT EXISTS journal_notes (
+    plan_id INTEGER PRIMARY KEY,
+    note TEXT NOT NULL DEFAULT '',
+    updated_at TEXT NOT NULL DEFAULT (datetime('now'))
+);
 CREATE TABLE IF NOT EXISTS champion_history (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
     strategy_id INTEGER NOT NULL,

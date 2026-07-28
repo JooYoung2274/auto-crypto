@@ -13,6 +13,7 @@ import { ChampionPanel } from "./components/ChampionPanel"
 import { PendingPanel } from "./components/PendingPanel"
 import { ReportView } from "./components/ReportView"
 import { PortfolioPanel } from "./components/PortfolioPanel"
+import { JournalPanel } from "./components/JournalPanel"
 import { TeamPanel } from "./components/TeamPanel"
 import { emptyTeamState, reduceTeamEvent } from "./lib/teamState"
 import type { AgentMeta } from "./office/engine"
@@ -96,6 +97,7 @@ const TABS = [
   { id: "leaderboard", label: "리더보드" },
   { id: "champion", label: "챔피언" },
   { id: "pending", label: "대기 주문" },
+  { id: "journal", label: "매매일지" },
   { id: "reports", label: "리포트" },
   { id: "portfolio", label: "포트폴리오" },
 ] as const
@@ -451,6 +453,7 @@ export default function App() {
           {tab === "leaderboard" && <Leaderboard version={lbVersion} />}
           {tab === "champion" && <ChampionPanel version={lbVersion} />}
           {tab === "pending" && <PendingPanel version={pfVersion} />}
+          {tab === "journal" && <JournalPanel version={pfVersion} />}
           {tab === "reports" && <ReportView />}
           {tab === "portfolio" && <PortfolioPanel version={pfVersion} />}
         </div>

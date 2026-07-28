@@ -499,3 +499,62 @@ export interface TradeHistoryRow {
   /** 손절 | 익절 | 강제 청산 */
   exit_reason: string
 }
+
+// ---------------------------------------------------------------------------
+// 매매일지 — GET /api/journal
+// ---------------------------------------------------------------------------
+
+/** 거래 결과 분류. */
+export type JournalOutcome = "take_profit" | "stop_loss" | "liquidation" | "closed"
+
+/** 계획한 분할 진입 레그 + 실제 체결 여부. */
+export interface JournalEntryLeg {
+  index: number
+  price: number
+  fraction: number
+  filled: boolean
+  fill_price: number | null
+  fill_ts: string | null
+}
+
+/** 계획한 분할 익절 레그 + 체결 여부. */
+export interface JournalTpLeg {
+  index: number
+  price: number
+  fraction: number
+  filled: boolean
+}
+
+/** 종결 거래 1건의 일지. 숫자는 거래 내역과 같은 롤업에서 나온다. */
+export interface JournalEntry {
+  plan_id: number
+  symbol: string
+  side: PositionSide
+  leverage: number
+  outcome: JournalOutcome
+  exit_reason: string
+  entry_ts: string
+  exit_ts: string
+  holding_minutes: number
+  /** 진입 근거 (규칙상 2개 이상). */
+  evidence: string[]
+  entry_legs: JournalEntryLeg[]
+  planned_weighted_entry: number | null
+  actual_avg_entry: number
+  qty: number
+  stop: { price: number | null; distance_pct: number | null }
+  tps: JournalTpLeg[]
+  /** 손익비. 기하가 불완전하면 null. */
+  rr: number | null
+  /** 통과해야 했던 최소 손익비 (BTC·ETH 2.0 / 알트 3.0). */
+  rr_gate: number
+  avg_exit: number
+  pnl_usdt: number
+  funding_paid: number
+  margin_usdt: number
+  ret_on_margin: number
+  /** 가격 표시 소수 자릿수 — 심볼 가격대에 맞춰 백엔드가 계산. */
+  price_decimals: number
+  /** 사용자 메모 (없으면 빈 문자열). */
+  note: string
+}
