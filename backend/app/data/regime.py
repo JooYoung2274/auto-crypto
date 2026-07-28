@@ -1,7 +1,10 @@
 """Market regime proxy from Binance daily closes (스펙 §3.1 — 키 프리,
 백테스트 가능한 TOTAL2/3·도미넌스 프록시).
 
-- ``ALT_INDEX`` = equal-weight normalized index of non-BTC universe closes.
+- ``ALT_INDEX`` = equal-weight normalized index of the **fixed regime
+  basket**'s non-BTC closes (``settings.regime_basket``). 매매 유니버스와
+  분리돼 있다 — 종목을 추가해도 시장 판정이 흔들리지 않게 하기 위함이다
+  (가이드의 TOTAL2/도미넌스는 시장 전체 지수라 매매 종목과 무관하다).
 - ``DOM_PROXY`` = BTC close / ALT_INDEX (dominance *direction* proxy).
 - Judgment via 50/200 SMA on both series:
     시장↑(ALT 50>200) + 도미넌스↓ → 'long_alt'   (알트 불장)
@@ -83,15 +86,31 @@ class RegimeService:
         self.settings = settings
 
     # -- compute + cache --------------------------------------------------------
+    def basket(self) -> list[str]:
+        """레짐 판정에 쓰는 **고정** 심볼 목록 (매매 유니버스와 무관).
+
+        가이드의 TOTAL2/도미넌스는 시장 전체 지수라 내가 무엇을 매매하든
+        변하지 않는다. 이 프록시를 매매 유니버스로 계산하면 종목 추가만으로
+        판정이 뒤집힌다 (7종→10종 확장 시 short → cash 관측). BTC는 도미넌스
+        분자라 목록에 없어도 넣는다.
+        """
+        if self.settings is None:
+            return [BTC_SYMBOL]
+        symbols = list(getattr(self.settings, "regime_basket", None) or [])
+        if not symbols:  # 설정이 비었으면 과거 동작(유니버스)으로 degrade
+            symbols = list(self.settings.universe)
+        if BTC_SYMBOL not in symbols:
+            symbols = [BTC_SYMBOL, *symbols]
+        return symbols
+
     def refresh(self, limit: int = 400) -> pd.DataFrame:
-        """Load universe daily closes via the loader, compute the regime
-        frame and upsert it into ``market_regime``. Symbols with no data
-        are skipped (offline the loader serves its cache)."""
+        """Load the regime basket's daily closes via the loader, compute the
+        regime frame and upsert it into ``market_regime``. Symbols with no
+        data are skipped (offline the loader serves its cache)."""
         if self.loader is None:
             raise ValueError("RegimeService.refresh requires a loader")
-        universe = list(self.settings.universe) if self.settings else [BTC_SYMBOL]
         closes: dict[str, pd.Series] = {}
-        for symbol in universe:
+        for symbol in self.basket():
             try:
                 df = self.loader.get_ohlcv(symbol, "1d", limit)
             except Exception:  # noqa: BLE001 — a bad symbol must not kill it

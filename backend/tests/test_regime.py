@@ -11,6 +11,7 @@ from app.data.regime import (
     RegimeService,
     compute_regime_frame,
 )
+from app.config import Settings
 from tests.conftest import seed_market_regime
 
 BTC = "BTCUSDT"
@@ -195,3 +196,96 @@ class TestLookAheadPoison:
 
         # Bars on the last day read the PREVIOUS day's row → 오염 불가시.
         pd.testing.assert_series_equal(aligned_clean, aligned_bad)
+
+
+# -- 레짐 바스켓은 매매 유니버스와 분리돼 있다 ------------------------------------
+class TestRegimeBasketIsFixed:
+    """가이드의 TOTAL2/도미넌스는 시장 전체 지수라 매매 종목과 무관하다.
+    유니버스로 계산하면 종목 추가만으로 판정이 뒤집힌다 — 실제로 7종→10종
+    확장 시 도미넌스 방향이 반대가 되어 short → cash 로 매매가 멈췄다."""
+
+    @staticmethod
+    def _settings(tmp_path, **over):
+        return Settings(db_path=str(tmp_path / "r.db"), _env_file=None, **over)
+
+    def test_basket_ignores_the_trading_universe(self, db, tmp_path):
+        s = self._settings(
+            tmp_path,
+            universe=["BTCUSDT", "ETHUSDT", "SOLUSDT", "LINKUSDT", "HYPEUSDT"],
+            regime_basket=["BTCUSDT", "ETHUSDT", "SOLUSDT"],
+        )
+        assert RegimeService(db, loader=None, settings=s).basket() == [
+            "BTCUSDT", "ETHUSDT", "SOLUSDT"
+        ]
+
+    def test_btc_is_always_included(self, db, tmp_path):
+        """BTC는 도미넌스 분자라 바스켓에 빠져 있어도 넣어야 한다."""
+        s = self._settings(tmp_path, regime_basket=["ETHUSDT", "SOLUSDT"])
+        basket = RegimeService(db, loader=None, settings=s).basket()
+        assert basket[0] == "BTCUSDT"
+        assert set(basket) == {"BTCUSDT", "ETHUSDT", "SOLUSDT"}
+
+    def test_empty_basket_degrades_to_universe(self, db, tmp_path):
+        """설정이 비면 과거 동작(유니버스)으로 떨어진다 — 레짐이 사라지진 않는다."""
+        s = self._settings(
+            tmp_path, universe=["BTCUSDT", "ETHUSDT"], regime_basket=[]
+        )
+        assert set(RegimeService(db, loader=None, settings=s).basket()) == {
+            "BTCUSDT", "ETHUSDT"
+        }
+
+    def test_expanding_the_universe_does_not_change_the_verdict(self, db, tmp_path):
+        """이번 사고의 재현 — 매매 종목을 늘려도 레짐은 그대로여야 한다."""
+        loader = _BasketLoader()
+        base = dict(regime_basket=["BTCUSDT", "ETHUSDT", "SOLUSDT"])
+        seven = RegimeService(
+            db, loader, self._settings(tmp_path, universe=["BTCUSDT", "ETHUSDT", "SOLUSDT"], **base)
+        ).refresh()
+        ten = RegimeService(
+            db, loader,
+            self._settings(
+                tmp_path,
+                universe=["BTCUSDT", "ETHUSDT", "SOLUSDT", "LINKUSDT", "HYPEUSDT", "SUIUSDT"],
+                **base,
+            ),
+        ).refresh()
+        assert list(seven["regime"]) == list(ten["regime"])
+        assert seven["alt_index"].equals(ten["alt_index"])
+        # 바스켓에 없는 심볼은 로더가 아예 조회하지 않는다.
+        assert "LINKUSDT" not in loader.requested
+
+    def test_changing_the_basket_does_change_the_verdict(self, db, tmp_path):
+        """분리가 '무시'가 되면 안 된다 — 바스켓을 바꾸면 지수도 바뀐다."""
+        loader = _BasketLoader()
+        a = RegimeService(
+            db, loader, self._settings(tmp_path, regime_basket=["BTCUSDT", "ETHUSDT"])
+        ).refresh()
+        b = RegimeService(
+            db, loader,
+            self._settings(tmp_path, regime_basket=["BTCUSDT", "ETHUSDT", "SOLUSDT"]),
+        ).refresh()
+        assert not a["alt_index"].equals(b["alt_index"])
+
+
+class _BasketLoader:
+    """심볼별로 서로 다른 결정론 일봉을 주는 테스트 로더."""
+
+    SHAPES = {
+        "ETHUSDT": (100.0, -0.15),
+        "SOLUSDT": (50.0, 0.40),
+        "BTCUSDT": (30000.0, 0.10),
+        "LINKUSDT": (10.0, -0.60),
+        "HYPEUSDT": (60.0, 0.90),
+        "SUIUSDT": (1.0, -0.30),
+    }
+
+    def __init__(self, n: int = 400):
+        self.n = n
+        self.requested: list[str] = []
+
+    def get_ohlcv(self, symbol: str, timeframe: str = "1d", limit: int = 400):
+        self.requested.append(symbol)
+        start, drift = self.SHAPES[symbol]
+        idx = pd.date_range("2025-01-01", periods=self.n, freq="D")
+        close = start * (1.0 + drift * np.linspace(0.0, 1.0, self.n))
+        return pd.DataFrame({"close": close}, index=idx)

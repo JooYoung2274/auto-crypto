@@ -31,6 +31,25 @@ class Settings(BaseSettings):
         "XRPUSDT",
         "DOGEUSDT",
     ]
+    # 레짐 판정용 **고정** 바스켓 (스펙 §3.1). 매매 유니버스와 분리한다.
+    #
+    # 가이드는 TOTAL2/TOTAL3(전체 시장 시총, p73)와 BTC 도미넌스(p129) —
+    # 즉 내가 무엇을 매매하든 변하지 않는 시장 전체 지수 — 를 쓰라고 한다.
+    # 이 프록시를 매매 유니버스로 계산하면 종목을 추가하는 것만으로 시장
+    # 판정이 뒤집힌다. 실제로 7종 → 10종 확장 시 도미넌스 방향이 반대가 되어
+    # short → cash(전면 관망)로 바뀌며 매매가 멈췄다. 바스켓을 고정해 그
+    # 경로를 끊는다.
+    #
+    # BTC는 도미넌스 분자로 항상 쓰이므로 목록에 없어도 자동 포함된다.
+    regime_basket: list[str] = [
+        "BTCUSDT",
+        "ETHUSDT",
+        "SOLUSDT",
+        "XRPUSDT",
+        "DOGEUSDT",
+        "ADAUSDT",
+        "LTCUSDT",
+    ]
     # 고정 시드 (USDT). 수익은 withdrawal_ledger로 분리 — 복리 금지 (규칙 §1).
     initial_seed_usdt: float = 10_000.0
     # 진입·TP 레그 = post-only maker, 손절/청산회피 exit = taker (스펙 §0).
