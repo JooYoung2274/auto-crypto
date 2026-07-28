@@ -27,7 +27,7 @@ from ..config import Settings
 from ..db import Database
 from ..risk.engine import MarketState, RiskEngine
 from ..risk.plan import TradePlan
-from ..strategies.base import StrategySpec, generate_plan
+from ..strategies.base import StrategySpec, explain_plan, generate_plan
 from .base import AgentBase
 
 #: 오픈 플랜으로 간주하는 상태 (신규 진입 스킵 + 마진 예산 합산 대상).
@@ -99,6 +99,11 @@ def blackout_windows(
         if abs(event_ms - now_ms) <= half + 86_400_000:  # 근접 이벤트만
             windows.append((event_ms - half, event_ms + half))
     return tuple(windows)
+
+
+def _short(symbol: str) -> str:
+    """``BTCUSDT`` → ``BTC`` — 요약 한 줄에 여러 종목을 담기 위한 축약."""
+    return symbol[:-4] if symbol.endswith("USDT") else symbol
 
 
 class Trader(AgentBase):
@@ -309,19 +314,28 @@ class Trader(AgentBase):
         daily_pnl = self._daily_realized_pnl(db, wallet)
 
         orders: list[Order] = []
+        # 심볼별 판단 결과 — 사이클 끝에 한 줄로 요약해 남긴다. 왜 거래가
+        # 없었는지(관망/레짐 차단/포지션 보유)가 로그에 안 남으면 "고장인가"를
+        # 매번 코드로 확인해야 한다.
+        verdicts: list[tuple[str, str]] = []
         for symbol, frames in data.items():
             if symbol in open_symbols:
                 await self.log(
                     f"{symbol} 오픈 플랜 유지 — 중복 진입 방지", symbol=symbol
                 )
+                verdicts.append((symbol, "오픈 플랜 유지"))
                 continue
-            plan = await asyncio.to_thread(
-                self._build_plan, spec, frames, regime, symbol
+            plan, reason = await asyncio.to_thread(
+                self._explain_plan, spec, frames, regime, symbol
             )
             if plan is None:
+                verdicts.append((symbol, reason))
                 continue
             if (symbol, plan.side) in positions:
-                continue  # 같은 방향 포지션 보유 중 — 플랜 종료 전 신규 진입 없음
+                # 같은 방향 포지션 보유 중 — 플랜 종료 전 신규 진입 없음
+                side = "롱" if plan.side == "long" else "숏"
+                verdicts.append((symbol, f"{side} 포지션 보유 중"))
+                continue
             plan = dataclasses.replace(plan, margin_usdt=margin_budget)
             try:
                 quote = await broker.get_quote(symbol)
@@ -332,6 +346,7 @@ class Trader(AgentBase):
                     level="error",
                     symbol=symbol,
                 )
+                verdicts.append((symbol, "시세 조회 실패"))
                 continue
             state = MarketState(
                 as_of_ts=now,
@@ -358,13 +373,25 @@ class Trader(AgentBase):
                     symbol=symbol,
                     reason=verdict.reason,
                 )
+                verdicts.append((symbol, f"거부 — {verdict.reason}"))
                 continue
             placed = await self._place_plan(db, broker, plan)
+            side = "롱" if plan.side == "long" else "숏"
             if placed:
                 plan_margin += plan.margin_usdt
                 open_symbols.add(symbol)
                 orders.extend(placed)
+                verdicts.append((symbol, f"✅ {side} 진입 — 래더 {len(placed)}레그 발주"))
+            else:
+                verdicts.append((symbol, f"{side} 승인됐으나 발주 실패"))
 
+        if verdicts:
+            await self.log(
+                "판단 요약 — " + " · ".join(f"{_short(s)} {v}" for s, v in verdicts),
+                strategy=spec.id_key(),
+                regime=regime,
+                verdicts={s: v for s, v in verdicts},
+            )
         if not orders:
             await self.log("이번 사이클 신규 진입 없음", strategy=spec.id_key())
         if hasattr(broker, "snapshot"):
@@ -383,6 +410,29 @@ class Trader(AgentBase):
             return generate_plan(spec, frames, regime, symbol=symbol)
         except Exception:  # noqa: BLE001 — a bad symbol must not kill the pass
             return None
+
+    @staticmethod
+    def _explain_plan(
+        spec: StrategySpec,
+        frames: dict[str, pd.DataFrame],
+        regime: str,
+        symbol: str,
+    ) -> tuple[TradePlan | None, str]:
+        """플랜 + 관망 사유.
+
+        판단 자체는 ``_build_plan``에 그대로 위임한다 — 판단 경로를 둘로
+        나누면 로깅용 코드와 실제 매매가 어긋날 수 있고, 이 메서드를
+        대체하는 테스트도 무력화된다. 사유는 플랜이 없을 때만 따로 구한다
+        (사이클당 심볼 1회라 비용이 없다).
+        """
+        plan = Trader._build_plan(spec, frames, regime, symbol)
+        if plan is not None:
+            return plan, ""
+        try:
+            _unused, reason = explain_plan(spec, frames, regime, symbol=symbol)
+        except Exception:  # noqa: BLE001 — a bad symbol must not kill the pass
+            reason = "판단 실패"
+        return None, reason
 
     async def _place_plan(
         self, db: Database, broker: Broker, plan: TradePlan

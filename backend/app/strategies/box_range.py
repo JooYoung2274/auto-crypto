@@ -90,3 +90,37 @@ def plan(
             tps=[(tp1, 0.5), (box.midpoint, 0.5)],
         )
     return None  # 박스 중간 = 홀짝 자리 — 관망 (규칙 §2)
+
+
+def describe(
+    frames: dict[str, pd.DataFrame],
+    symbol: str,
+    *,
+    pivot_k: float = 3,
+    entry_q: float = 0.25,
+    **_ignored,
+) -> str | None:
+    """관망 사유 진단 — 지금 가격이 박스 어디에 있는지 한 줄로.
+
+    로깅 전용이다 (사이클당 심볼 1회). ``plan``이 None을 돌려준 이유가
+    '박스 이탈'인지 '박스 중간'인지 '데이터 부족'인지 구분해준다 — 로그에
+    '셋업 없음'만 남으면 고장인지 정상인지 알 수 없다.
+    """
+    h4 = frames.get("4h")
+    if h4 is None or len(h4) < MIN_BARS:
+        return "4h 데이터 부족"
+    mark = mark_price(frames)
+    box = build_box(swing_pivots(h4, k=int(pivot_k)), as_of=None, recent=RECENT_PIVOTS)
+    if box is None or box.height <= 0 or mark is None:
+        return "확정 박스 없음"
+    q = (mark - box.bottom) / box.height
+    loc = f"박스 {box.bottom:.6g}~{box.top:.6g} 중 {q:.0%}"
+    if q < 0:
+        return f"{loc} — 하단 이탈"
+    if q > 1:
+        return f"{loc} — 상단 이탈"
+    if q <= entry_q:
+        return f"{loc} — 하단 지지"
+    if q >= 1.0 - entry_q:
+        return f"{loc} — 상단 저항"
+    return f"{loc} — 박스 중간(관망 구간)"

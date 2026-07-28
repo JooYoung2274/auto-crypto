@@ -84,6 +84,12 @@ TEMPLATES: dict[str, ParamGrid] = {
     },
 }
 
+#: 관망 사유 진단 함수 (선택) — 구현된 템플릿만 등록한다. 로깅 전용이라
+#: 없으면 일반 사유("셋업 없음")만 남는다.
+DESCRIBE_FUNCS = {
+    "box_range": box_range.describe,
+}
+
 PLAN_FUNCS = {
     "topdown_pullback": topdown_pullback.plan,
     "ma_confluence": ma_confluence.plan,

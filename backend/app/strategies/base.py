@@ -256,6 +256,58 @@ def generate_plan(
     return plan
 
 
+def explain_plan(
+    spec: StrategySpec,
+    frames: dict[str, pd.DataFrame],
+    regime: str,
+    symbol: str = BTC_SYMBOL,
+    as_of: pd.Timestamp | None = None,
+) -> tuple[TradePlan | None, str]:
+    """``generate_plan`` 과 같은 판단 + **관망 사유**를 함께 돌려준다.
+
+    라이브 로깅 전용이다. ``generate_plan`` 은 백테스트에서 봉마다 호출되는
+    핫패스(1회 평가 ~100초)라 사유 문자열을 만들지 않는다. 이 함수는 사이클당
+    심볼 1회만 불리므로 사유를 붙여도 비용이 없다.
+
+    돌려주는 사유는 플랜이 None일 때만 채워지며, 진입이 성사되면 빈 문자열이다.
+    """
+    from . import registry  # local import avoids a circular dependency
+
+    fn = registry.PLAN_FUNCS.get(spec.template)
+    if fn is None:
+        return None, f"알 수 없는 전략 {spec.template}"
+    if regime not in TRADEABLE_REGIMES:
+        return None, f"{regime} 레짐 — 전면 관망"
+    try:
+        plan = fn(clip_frames(frames, as_of), symbol, **spec.params)
+    except Exception:  # noqa: BLE001 — 한 심볼의 오류가 사이클을 죽이지 않는다
+        return None, "판단 실패"
+    if plan is None:
+        return None, f"셋업 없음 ({_describe(spec, frames, symbol, as_of)})"
+    if not regime_allows(plan.side, regime, symbol):
+        side = "롱" if plan.side == "long" else "숏"
+        return None, f"{side} 신호 — {regime} 레짐에서 차단"
+    return plan, ""
+
+
+def _describe(
+    spec: StrategySpec,
+    frames: dict[str, pd.DataFrame],
+    symbol: str,
+    as_of: pd.Timestamp | None = None,
+) -> str:
+    """템플릿이 제공하면 관망 사유 상세를, 없으면 '사유 미상'."""
+    from . import registry
+
+    fn = registry.DESCRIBE_FUNCS.get(spec.template)
+    if fn is None:
+        return "사유 미상"
+    try:
+        return fn(clip_frames(frames, as_of), symbol, **spec.params) or "사유 미상"
+    except Exception:  # noqa: BLE001 — 진단 실패가 매매를 막으면 안 된다
+        return "사유 미상"
+
+
 def generate_signal(spec: StrategySpec, df: pd.DataFrame):  # pragma: no cover
     """Deprecated stock-era signal API.
 

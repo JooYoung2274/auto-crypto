@@ -11,7 +11,7 @@ import pytest
 
 from app.risk.engine import MarketState, RiskEngine
 from app.risk.plan import TradePlan
-from app.strategies.base import build_plan
+from app.strategies.base import build_plan, explain_plan
 from app.strategies import (
     TEMPLATES,
     StrategySpec,
@@ -663,3 +663,84 @@ def _box_of(frames, params):
         swing_pivots(frames["4h"], k=int(params["pivot_k"])),
         as_of=None, recent=RECENT_PIVOTS,
     )
+
+
+# -- explain_plan: 관망 사유를 남긴다 ---------------------------------------------
+class TestExplainPlan:
+    """왜 거래가 없었는지가 로그에 안 남으면 '고장인가'를 매번 코드로
+    확인해야 한다. generate_plan 과 **같은 판단**에 사유만 덧붙인다."""
+
+    def _spec(self):
+        return StrategySpec("box_range", dict(BOX_PARAMS))
+
+    def test_same_verdict_as_generate_plan(self):
+        """사유를 붙인다고 판단이 달라지면 안 된다."""
+        for builder, regime in (
+            (lambda: box_frames("bottom"), "long_alt"),
+            (lambda: box_frames("top"), "short"),
+            (lambda: box_frames("middle"), "long_alt"),
+            (lambda: box_frames("bottom"), "cash"),
+        ):
+            frames = builder()
+            expected = generate_plan(self._spec(), frames, regime, symbol=ALT)
+            got, _reason = explain_plan(self._spec(), frames, regime, symbol=ALT)
+            assert (got is None) == (expected is None)
+            if expected is not None:
+                assert got.side == expected.side
+
+    def test_entry_has_no_reason(self):
+        plan, reason = explain_plan(self._spec(), box_frames("top"), "short", symbol=ALT)
+        assert plan is not None and reason == ""
+
+    def test_cash_regime_is_reported(self):
+        plan, reason = explain_plan(self._spec(), box_frames("top"), "cash", symbol=ALT)
+        assert plan is None
+        assert "cash" in reason and "관망" in reason
+
+    def test_regime_blocked_signal_names_the_side(self):
+        """이번 사고의 핵심 — '롱 신호인데 숏장이라 막힘'이 드러나야 한다."""
+        plan, reason = explain_plan(
+            self._spec(), box_frames("bottom"), "short", symbol=ALT
+        )
+        assert plan is None
+        assert "롱 신호" in reason and "차단" in reason
+
+    def test_no_setup_reports_the_box_position(self):
+        """'셋업 없음'만으로는 고장인지 정상인지 알 수 없다 — 위치를 남긴다."""
+        plan, reason = explain_plan(
+            self._spec(), box_frames("middle"), "long_alt", symbol=ALT
+        )
+        assert plan is None
+        assert reason.startswith("셋업 없음")
+        assert "박스" in reason and "중간" in reason
+
+    def test_breakout_is_distinguished_from_mid_box(self):
+        """박스 이탈과 박스 중간은 둘 다 관망이지만 원인이 다르다."""
+        _p, mid = explain_plan(self._spec(), box_frames("middle"), "long_alt", symbol=ALT)
+        _p2, out = explain_plan(
+            self._spec(), box_frames_at(-0.2), "long_alt", symbol=ALT
+        )
+        assert "중간" in mid
+        assert "이탈" in out
+        assert mid != out
+
+    def test_unknown_template_does_not_raise(self):
+        plan, reason = explain_plan(
+            StrategySpec("nope", {}), box_frames("top"), "short", symbol=ALT
+        )
+        assert plan is None and "알 수 없는" in reason
+
+    def test_broken_frames_do_not_raise(self):
+        plan, reason = explain_plan(self._spec(), {}, "short", symbol=ALT)
+        assert plan is None
+        assert "데이터 부족" in reason or "판단 실패" in reason
+
+    def test_template_without_describe_still_reports(self):
+        """진단 함수가 없는 템플릿도 사유는 남아야 한다 (일반 문구)."""
+        spec = StrategySpec("vwma_support", {
+            "window": 100, "band": 0.01, "vp_window": 120,
+            "stop_pad": 0.02, "tp_r1": 3.0, "tp_r2": 5.0, "leverage": 4,
+        })
+        plan, reason = explain_plan(spec, box_frames("middle"), "long_alt", symbol=ALT)
+        if plan is None:
+            assert reason.startswith("셋업 없음")
