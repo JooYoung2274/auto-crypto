@@ -13,6 +13,7 @@ import numpy as np
 import pandas as pd
 import pytest
 
+from app.agents.quant import aggregate_metrics
 from app.backtest.engine import BacktestResult, run_backtest
 from app.backtest.metrics import (
     DEFAULT_BARS_PER_YEAR,
@@ -289,3 +290,68 @@ class TestIntegrationWithEngine:
 
         assert list(empty_trades_frame().columns) == TRADE_COLUMNS
         assert len(empty_trades_frame()) == 0
+
+
+# -- 무거래 심볼이 평균을 희석하지 않는다 -----------------------------------------
+class TestAggregateIgnoresInactiveSymbols:
+    """유니버스를 넓히기만 해도 지표가 깎이면 리더보드 점수가 뒤틀린다.
+
+    무거래 심볼은 win_rate/sharpe를 None으로 돌려 평균에서 빠졌지만
+    total_return/mdd는 0.0이라 그대로 섞였다 — 7종→10종 확장만으로
+    수익률이 7/10로 희석됐다 (랭킹 가중치 cagr 0.30 · mdd 0.20)."""
+
+    @staticmethod
+    def _active(**over):
+        base = {
+            "trade_count": 6, "win_rate": 0.5, "sharpe": 2.0, "mdd": 0.10,
+            "cagr": 0.30, "profit_factor": 1.8, "total_return": 0.20,
+            "funding_paid": -1.0, "fee_paid": 2.0, "liquidation_count": 0,
+        }
+        base.update(over)
+        return base
+
+    @staticmethod
+    def _idle():
+        """백테스트가 무거래 심볼에 대해 실제로 내놓는 모양."""
+        return {
+            "trade_count": 0, "win_rate": None, "sharpe": None, "mdd": 0.0,
+            "cagr": 0.0, "profit_factor": None, "total_return": 0.0,
+            "funding_paid": 0.0, "fee_paid": 0.0, "liquidation_count": 0,
+        }
+
+    def test_idle_symbols_do_not_dilute_returns(self):
+        one = aggregate_metrics([self._active()], min_trades=1)[0]
+        many = aggregate_metrics([self._active()] + [self._idle()] * 3, min_trades=1)[0]
+        assert many["total_return"] == pytest.approx(one["total_return"])
+        assert many["mdd"] == pytest.approx(one["mdd"])
+        assert many["cagr"] == pytest.approx(one["cagr"])
+
+    def test_universe_size_does_not_change_the_average(self):
+        """7종 → 10종 확장 시나리오 재현 — 활동 심볼이 같으면 지표도 같아야."""
+        active = [self._active(total_return=0.10 * i, mdd=0.05 * i) for i in (1, 2, 3)]
+        seven = aggregate_metrics(active + [self._idle()] * 4, min_trades=1)[0]
+        ten = aggregate_metrics(active + [self._idle()] * 7, min_trades=1)[0]
+        for key in ("total_return", "mdd", "cagr", "sharpe", "win_rate"):
+            assert seven[key] == pytest.approx(ten[key]), key
+
+    def test_trade_counts_still_sum_over_every_symbol(self):
+        agg, low = aggregate_metrics(
+            [self._active(trade_count=4), self._active(trade_count=5), self._idle()],
+            min_trades=10,
+        )
+        assert agg["trade_count"] == 9
+        assert low is True  # 9 < 10
+
+    def test_liquidations_still_sum(self):
+        agg = aggregate_metrics(
+            [self._active(liquidation_count=2), self._idle()], min_trades=1
+        )[0]
+        assert agg["liquidation_count"] == 2
+
+    def test_all_idle_yields_none_not_zero(self):
+        """전 심볼 무거래면 '0% 수익'이 아니라 '측정 불가'다."""
+        agg, low = aggregate_metrics([self._idle()] * 3, min_trades=1)
+        assert agg["total_return"] is None
+        assert agg["mdd"] is None
+        assert agg["trade_count"] == 0
+        assert low is True

@@ -30,8 +30,10 @@ from app.broker.okx import (
     OKXBroker,
     OKXConfigError,
     OKXError,
+    OKXUniverseError,
     from_okx_symbol,
     to_okx_symbol,
+    validate_universe,
 )
 from app.config import Settings
 from app.data.loader import DataLoader
@@ -1047,3 +1049,41 @@ def test_ledger_only_skim_handles_none_now_ms(tmp_path):
     amt = ledger_only_skim(db, s, _mk_balance(2000.0), None)  # now_ms=None
     assert amt == pytest.approx(100.0)
     db.close()
+
+
+# -- 유니버스 계약 크기(ctVal) 등록 가드 ------------------------------------------
+class TestUniverseCtValGuard:
+    """OKX 주문 수량은 **계약 수**라 ctVal 미등록 심볼을 매매하면 수량이
+    배수로 어긋난다 (DOGE는 ctVal=1000 → 미등록 시 1/1000만 주문).
+    조용히 틀린 주문을 내보내느니 기동을 거부한다."""
+
+    def test_registered_universe_passes(self):
+        validate_universe(["BTCUSDT", "ETHUSDT", "DOGEUSDT", "LINK USDT".replace(" ", "")])
+
+    def test_unregistered_symbol_refuses_startup(self):
+        with pytest.raises(OKXUniverseError) as exc:
+            validate_universe(["BTCUSDT", "NOSUCHUSDT"])
+        assert "NOSUCHUSDT" in str(exc.value)
+        assert "NOSUCH-USDT-SWAP" in str(exc.value)
+
+    def test_every_registered_symbol_maps_back(self):
+        """등록 키가 to_okx_symbol()이 만드는 형태와 일치해야 가드가 동작한다."""
+        for inst_id in OKX_CT_VAL:
+            assert to_okx_symbol(from_okx_symbol(inst_id)) == inst_id
+
+    def test_newly_added_symbols_are_registered(self):
+        """2026-07-28 추가분 — OKX 실측 ctVal."""
+        assert OKX_CT_VAL["LINK-USDT-SWAP"] == 1.0
+        assert OKX_CT_VAL["HYPE-USDT-SWAP"] == 0.1
+        assert OKX_CT_VAL["SUI-USDT-SWAP"] == 1.0
+
+    def test_broker_construction_rejects_unregistered_universe(self, tmp_path):
+        """기동 경로에서 실제로 막히는지 — 키가 있어도 거부한다."""
+        s = Settings(
+            trading_mode="live", exchange="okx",
+            okx_api_key="k", okx_api_secret="s", okx_api_passphrase="p",
+            universe=["BTCUSDT", "NOSUCHUSDT"],
+            db_path=str(tmp_path / "x.db"), _env_file=None,
+        )
+        with pytest.raises(OKXUniverseError):
+            OKXBroker(s)

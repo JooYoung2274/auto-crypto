@@ -62,14 +62,23 @@ def aggregate_metrics(
     """Aggregate per-(symbol, timeframe) metrics into ``avg_metrics``.
 
     Averages win_rate/sharpe/mdd/cagr/profit_factor/total_return and the
-    funding/fee costs over symbols (ignoring None); sums trade_count and
-    liquidation_count. ``trades_per_year`` is derived from the widest data
-    span (a ``years`` key added by the quant). ``low_confidence`` is True
-    when the total trade count is below ``min_trades``.
+    funding/fee costs **over the symbols the strategy actually traded**;
+    sums trade_count and liquidation_count over all. ``trades_per_year`` is
+    derived from the widest data span (a ``years`` key added by the quant).
+    ``low_confidence`` is True when the total trade count is below
+    ``min_trades``.
+
+    거래가 없는 심볼을 평균에 넣으면 지표가 기계적으로 희석된다: 무거래
+    심볼은 ``win_rate``/``sharpe``를 None으로 돌려 평균에서 빠지지만
+    ``total_return``/``mdd``는 0.0이라 그대로 섞였다. 그래서 유니버스를
+    7종에서 10종으로 늘리기만 해도 수익률이 7/10로 깎이고(2.21%→1.55%)
+    MDD도 같은 비율로 낮아져(4.14%→2.90%) 리더보드 점수가 뒤틀렸다
+    (랭킹 가중치: cagr 0.30 · mdd 0.20). 활동한 심볼만 평균한다.
     """
+    active = [m for m in metrics_list if (m.get("trade_count") or 0) > 0]
     avg: dict = {}
     for key in _AVG_KEYS:
-        vals = [m[key] for m in metrics_list if m.get(key) is not None]
+        vals = [m[key] for m in active if m.get(key) is not None]
         avg[key] = float(sum(vals) / len(vals)) if vals else None
     for key in _SUM_KEYS:
         avg[key] = int(sum(m.get(key) or 0 for m in metrics_list))

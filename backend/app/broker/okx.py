@@ -74,6 +74,10 @@ OKX_CT_VAL: dict[str, float] = {
     # 2026-07-20 사용자 요청 추가 (OKX instruments 실측값)
     "ADA-USDT-SWAP": 100.0,
     "LTC-USDT-SWAP": 1.0,
+    # 2026-07-28 사용자 요청 추가 (OKX /public/instruments 실측값)
+    "LINK-USDT-SWAP": 1.0,
+    "HYPE-USDT-SWAP": 0.1,
+    "SUI-USDT-SWAP": 1.0,
 }
 
 #: OKX 주문 상태 → ABC OrderStatus.
@@ -110,6 +114,32 @@ def from_okx_symbol(inst_id: str) -> str:
 
 def _ct_val(inst_id: str) -> float:
     return OKX_CT_VAL.get(inst_id, 1.0)
+
+
+class OKXUniverseError(RuntimeError):
+    """유니버스에 계약 크기(ctVal) 미등록 심볼 — live 기동 거부."""
+
+
+def validate_universe(universe: list[str]) -> None:
+    """유니버스 전 심볼의 계약 크기가 등록돼 있는지 확인 (fail-fast).
+
+    OKX 선물 주문 수량은 **계약 수**라 ctVal(1계약당 코인 수)을 모르면 수량이
+    통째로 어긋난다. ``_ct_val``의 기본값 1.0은 유니버스 밖 심볼(수동 포지션
+    리컨실 등)을 위한 것이지, 매매 대상에 쓰라고 있는 값이 아니다.
+
+    예: DOGE는 ctVal=1000. 미등록 상태로 매매하면 의도한 수량의 1/1000만
+    주문된다. 반대 방향 오차가 나는 심볼이면 수백 배 과잉 주문이 된다.
+    조용히 틀린 수량을 내보내느니 기동을 거부한다.
+    """
+    missing = sorted({s for s in universe if to_okx_symbol(s) not in OKX_CT_VAL})
+    if missing:
+        raise OKXUniverseError(
+            "계약 크기(ctVal) 미등록 심볼: "
+            + ", ".join(f"{s}({to_okx_symbol(s)})" for s in missing)
+            + " — OKX /api/v5/public/instruments 의 ctVal을 확인해 "
+            "app/broker/okx.py 의 OKX_CT_VAL에 등록하세요. "
+            "등록 없이 매매하면 주문 수량이 배수로 어긋납니다."
+        )
 
 
 def _okx_clordid(coid: str | None) -> str | None:
@@ -169,6 +199,8 @@ class OKXBroker(Broker):
                 "OKXBroker requires CA_OKX_API_KEY, CA_OKX_API_SECRET and "
                 "CA_OKX_API_PASSPHRASE — 키 없이 live 기동 거부 (스펙 §0)"
             )
+        # 유니버스를 늘릴 때 ctVal 등록을 빠뜨리면 수량이 배수로 어긋난다.
+        validate_universe(list(settings.universe))
         if plan_lookup is None and db is not None:
             def plan_lookup(plan_id: int) -> str | None:  # noqa: F811
                 rows = db.execute(
